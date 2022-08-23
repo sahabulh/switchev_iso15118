@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VALIDITY_CPO_SUBCA2_CERT=365
+VALIDITY_MO_SUBCA2_CERT=1460
 
 ISO_2="iso-2"
 ISO_20="iso-20"
@@ -114,36 +114,36 @@ mkdir -p $CERT_PATH
 mkdir -p $CSR_PATH
 mkdir -p $KEY_PATH
 
-# Create an intermediate CPO sub-CA 2 certificate which is directly signed by CPO sub-CA 1
+# Create an intermediate MO sub-CA 2 certificate which is directly signed by MO sub-CA 1
 
 # Generate private key
 if [ $version == $ISO_2 ];
 then
-    openssl ecparam -genkey -name $EC_CURVE | openssl ec $SYMMETRIC_CIPHER -passout pass:$password -out $KEY_PATH/cpoSubCA2.key
+    openssl ecparam -genkey -name $EC_CURVE | openssl ec $SYMMETRIC_CIPHER -passout pass:$password -out $KEY_PATH/moSubCA2.key
 else
-    openssl genpkey -algorithm $EC_CURVE $SYMMETRIC_CIPHER -pass pass:$password -out $KEY_PATH/cpoSubCA2.key
+    openssl genpkey -algorithm $EC_CURVE $SYMMETRIC_CIPHER -pass pass:$password -out $KEY_PATH/moSubCA2.key
 fi
 
 # Create a CSR
-openssl req -new -key $KEY_PATH/cpoSubCA2.key -passin pass:$password -config configs/cpoSubCA2Cert.cnf -out $CSR_PATH/cpoSubCA2.csr
+openssl req -new -key $KEY_PATH/moSubCA2.key -passin pass:$password -config configs/moSubCA2Cert.cnf -out $CSR_PATH/moSubCA2.csr
 echo "CSR generation is done."
 
 DEST=/venv/lib/python3.10/site-packages/iso15118/shared/pki/
-ssh -o 'StrictHostKeyChecking no' root@10.1.2.102 "cd $DEST;mkdir -p $CERT_PATH;mkdir -p $CSR_PATH;mkdir -p $KEY_PATH"
-scp $CSR_PATH/cpoSubCA2.csr root@10.1.2.102:$DEST$CSR_PATH
-echo "CSR is sent to the CPO sub-CA 1."
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.106 "cd $DEST;mkdir -p $CERT_PATH;mkdir -p $CSR_PATH;mkdir -p $KEY_PATH"
+scp $CSR_PATH/moSubCA2.csr root@10.1.2.106:$DEST$CSR_PATH
+echo "CSR is sent to the MO sub-CA 1."
 
 # Create an X.509 certificate 
-ssh root@10.1.2.102 "cd $DEST;openssl x509 -req -in $CSR_PATH/cpoSubCA2.csr -extfile configs/cpoSubCA2Cert.cnf -extensions ext -CA $CERT_PATH/cpoSubCA1Cert.pem -CAkey $KEY_PATH/cpoSubCA1.key -passin pass:$password -set_serial 12347 -out $CERT_PATH/cpoSubCA2Cert.pem -days $VALIDITY_CPO_SUBCA2_CERT"
+ssh root@10.1.2.106 "cd $DEST;openssl x509 -req -in $CSR_PATH/moSubCA2.csr -extfile configs/moSubCA2Cert.cnf -extensions ext -CA $CERT_PATH/moSubCA1Cert.pem -CAkey $KEY_PATH/moSubCA1.key -passin pass:$password -set_serial 12355 -out $CERT_PATH/moSubCA2Cert.pem -days $VALIDITY_MO_SUBCA2_CERT"
 echo "Certificate generation and signing is finished."
-ssh root@10.1.2.102 "cd $DEST;rm $CSR_PATH/cpoSubCA2.csr"
-echo "CSR is deleted from the CPO sub-CA 1."
+ssh root@10.1.2.106 "cd $DEST;rm $CSR_PATH/moSubCA2.csr"
+echo "CSR is deleted from the MO sub-CA 1."
 
-ssh root@10.1.2.102 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/cpoSubCA2Cert.pem root@10.1.2.103:$DEST$CERT_PATH"
-echo "Certificate is sent back to the CPO sub-CA 2."
-ssh root@10.1.2.102 "cd $DEST;rm $CERT_PATH/cpoSubCA2Cert.pem"
-echo "Certificate is deleted from the CPO sub-CA 1."
+ssh root@10.1.2.106 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/moSubCA2Cert.pem root@10.1.2.107:$DEST$CERT_PATH"
+echo "Certificate is sent back to the MO sub-CA 2."
+ssh root@10.1.2.106 "cd $DEST;rm $CERT_PATH/moSubCA2Cert.pem"
+echo "Certificate is deleted from the MO sub-CA 1."
 
 # Convert the certificates from PEM format to DER format
-openssl x509 -inform PEM -in $CERT_PATH/cpoSubCA2Cert.pem -outform DER -out $CERT_PATH/cpoSubCA2Cert.der
+openssl x509 -inform PEM -in $CERT_PATH/moSubCA2Cert.pem -outform DER -out $CERT_PATH/moSubCA2Cert.der
 echo "Certificate has been converted and saved in DER format."
