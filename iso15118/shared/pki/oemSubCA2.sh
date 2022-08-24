@@ -1,6 +1,8 @@
 #!/bin/bash
 
-VALIDITY_SECC_LEAF_CERT=60
+VALIDITY_OEM_SUBCA2_CERT=1460
+HOST="OEM Sub-CA 2"
+MASTER="OEM Sub-CA 1"
 
 ISO_2="iso-2"
 ISO_20="iso-20"
@@ -114,56 +116,36 @@ mkdir -p $CERT_PATH
 mkdir -p $CSR_PATH
 mkdir -p $KEY_PATH
 
-# Create a SECC leaf certificate which is directly signed by CPO sub-CA 2
+# Create an intermediate OEM sub-CA 2 certificate which is directly signed by OEM sub-CA 1
 
 # Generate private key
 if [ $version == $ISO_2 ];
 then
-    openssl ecparam -genkey -name $EC_CURVE | openssl ec $SYMMETRIC_CIPHER -passout pass:$password -out $KEY_PATH/seccLeaf.key
+    openssl ecparam -genkey -name $EC_CURVE | openssl ec $SYMMETRIC_CIPHER -passout pass:$password -out $KEY_PATH/oemSubCA2.key
 else
-    openssl genpkey -algorithm $EC_CURVE $SYMMETRIC_CIPHER -pass pass:$password -out $KEY_PATH/seccLeaf.key
+    openssl genpkey -algorithm $EC_CURVE $SYMMETRIC_CIPHER -pass pass:$password -out $KEY_PATH/oemSubCA2.key
 fi
 
 # Create a CSR
-openssl req -new -key $KEY_PATH/seccLeaf.key -passin pass:$password -config configs/seccLeafCert.cnf -out $CSR_PATH/seccLeaf.csr
-echo "CSR generation is done."
+openssl req -new -key $KEY_PATH/oemSubCA2.key -passin pass:$password -config configs/oemSubCA2Cert.cnf -out $CSR_PATH/oemSubCA2.csr
+echo "$HOST CSR generation is done."
 
 DEST=/venv/lib/python3.10/site-packages/iso15118/shared/pki/
-ssh -o 'StrictHostKeyChecking no' root@10.1.2.103 "cd $DEST;mkdir -p $CERT_PATH;mkdir -p $CSR_PATH;mkdir -p $KEY_PATH"
-scp $CSR_PATH/seccLeaf.csr root@10.1.2.103:$DEST$CSR_PATH
-echo "CSR is sent to the CPO sub-CA 2."
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.106 "cd $DEST;mkdir -p $CERT_PATH;mkdir -p $CSR_PATH;mkdir -p $KEY_PATH"
+scp $CSR_PATH/oemSubCA2.csr root@10.1.2.106:$DEST$CSR_PATH
+echo "$HOST CSR is sent to the $MASTER."
 
 # Create an X.509 certificate 
-ssh root@10.1.2.103 "cd $DEST;openssl x509 -req -in $CSR_PATH/seccLeaf.csr -extfile configs/seccLeafCert.cnf -extensions ext -CA $CERT_PATH/cpoSubCA2Cert.pem -CAkey $KEY_PATH/cpoSubCA2.key -passin pass:$password -set_serial 12348 -out $CERT_PATH/seccLeafCert.pem -days $VALIDITY_SECC_LEAF_CERT"
-echo "Certificate generation and signing is finished."
-ssh root@10.1.2.103 "cd $DEST;rm $CSR_PATH/seccLeaf.csr"
-echo "CSR is deleted from the CPO sub-CA 2."
+ssh root@10.1.2.106 "cd $DEST;openssl x509 -req -in $CSR_PATH/oemSubCA2.csr -extfile configs/oemSubCA2Cert.cnf -extensions ext -CA $CERT_PATH/oemSubCA1Cert.pem -CAkey $KEY_PATH/oemSubCA1.key -passin pass:$password -set_serial 12351 -out $CERT_PATH/oemSubCA2Cert.pem -days $VALIDITY_OEM_SUBCA2_CERT"
+echo "$HOST Certificate generation and signing is finished."
+ssh root@10.1.2.106 "cd $DEST;rm $CSR_PATH/oemSubCA2.csr"
+echo "$HOST CSR is deleted from the $MASTER."
 
-ssh root@10.1.2.103 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/seccLeafCert.pem root@10.1.2.104:$DEST$CERT_PATH"
-echo "Certificate is sent back to the SECC."
-ssh root@10.1.2.103 "cd $DEST;rm $CERT_PATH/seccLeafCert.pem"
-echo "Certificate is deleted from the CPO sub-CA 2."
+ssh root@10.1.2.106 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/oemSubCA2Cert.pem root@10.1.2.107:$DEST$CERT_PATH"
+echo "$HOST Certificate is sent back to the $HOST."
+ssh root@10.1.2.106 "cd $DEST;rm $CERT_PATH/oemSubCA2Cert.pem"
+echo "$HOST Certificate is deleted from the $MASTER."
 
 # Convert the certificates from PEM format to DER format
-openssl x509 -inform PEM -in $CERT_PATH/seccLeafCert.pem -outform DER -out $CERT_PATH/seccLeafCert.der
-echo "Certificate has been converted and saved in DER format."
-
-# Download V2GRootCAcert, cpoSubCA1Cert and cpoSubCA2Cert
-# Download V2GRootCAcert, cpoSubCA1Cert and cpoSubCA2Cert
-scp -o 'StrictHostKeyChecking no' root@10.1.2.101:$DEST$CERT_PATH/v2gRootCACert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.101:$DEST$CERT_PATH/v2gRootCACert.der $DEST$CERT_PATH
-echo "V2GRootCA certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.102:$DEST$CERT_PATH/cpoSubCA1Cert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.102:$DEST$CERT_PATH/cpoSubCA1Cert.der $DEST$CERT_PATH
-echo "CPOSubCA1 certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.103:$DEST$CERT_PATH/cpoSubCA2Cert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.103:$DEST$CERT_PATH/cpoSubCA2Cert.der $DEST$CERT_PATH
-echo "CPOSubCA2 certificate is downloaded."
-
-# Concatenate the SECC certificate with the CPO Sub-2 and Sub-1 certificates to provide a certificate chain
-cat $CERT_PATH/seccLeafCert.pem $CERT_PATH/cpoSubCA2Cert.pem $CERT_PATH/cpoSubCA1Cert.pem > $CERT_PATH/cpoCertChain.pem
-echo "CPO certificate chain is created."
-
-# Place all passwords to generated private keys in separate text files.
-echo $password > $KEY_PATH/seccLeafPassword.txt
-echo "SECC leaf password saved."
+openssl x509 -inform PEM -in $CERT_PATH/oemSubCA2Cert.pem -outform DER -out $CERT_PATH/oemSubCA2Cert.der
+echo "$HOST Certificate has been converted and saved in DER format."
