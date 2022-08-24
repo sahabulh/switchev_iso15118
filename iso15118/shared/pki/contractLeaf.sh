@@ -180,7 +180,7 @@ echo "CPOSubCA2 certificate is downloaded."
 # Send contractLeafCert, moRootCAcert, moSubCA1Cert and moSubCA2Cert to the SECC
 scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/contractLeafCert.der root@10.1.2.104:$DEST$CERT_PATH
 echo "contractLeaf certificate is sent to the SECC."
-scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/moRootCAcert.der root@10.1.2.104:$DEST$CERT_PATH
+scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/moRootCACert.der root@10.1.2.104:$DEST$CERT_PATH
 echo "moRootCA certificate is sent to the SECC."
 scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/moSubCA1Cert.der root@10.1.2.104:$DEST$CERT_PATH
 echo "moSubCA1 certificate is sent to the SECC."
@@ -190,3 +190,8 @@ echo "moSubCA2 certificate is sent to the SECC."
 # Place all passwords to generated private keys in separate text files.
 echo $password > $KEY_PATH/contractLeafPassword.txt
 echo "$HOST password saved."
+
+#For some reason the contract private key has to be sent to the SECC also
+scp -o 'StrictHostKeyChecking no' $DEST$KEY_PATH/contractLeaf.key root@10.1.2.104:$DEST$KEY_PATH
+scp -o 'StrictHostKeyChecking no' $DEST$KEY_PATH/contractLeafPassword.txt root@10.1.2.104:$DEST$KEY_PATH
+echo "contractLeaf certificate is sent to the SECC."
