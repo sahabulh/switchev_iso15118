@@ -19,6 +19,7 @@ from iso15118.shared.exceptions import (
     FaultyStateImplementationError,
     InvalidV2GTPMessageError,
     MessageProcessingError,
+    V2GMessageValidationError,
 )
 from iso15118.shared.exi_codec import EXI
 from iso15118.shared.messages.app_protocol import (
@@ -34,6 +35,7 @@ from iso15118.shared.messages.enums import (
     ISOV20PayloadTypes,
     Namespace,
     Protocol,
+    SessionStopAction,
 )
 from iso15118.shared.messages.iso15118_2.datatypes import EnergyTransferModeEnum
 from iso15118.shared.messages.iso15118_2.msgdef import V2GMessage as V2GMessageV2
@@ -199,11 +201,22 @@ class SessionStateMachine(ABC):
                 v2gtp_msg.payload, self.get_exi_ns(v2gtp_msg.payload_type)
             )
 
-            logger.trace(
-                f"{v2gtp_msg.payload.hex()}:::"
-                f"{self.get_exi_ns(v2gtp_msg.payload_type).value}"
-            )
+            if hasattr(self.comm_session, "evse_id"):
+                logger.trace(
+                    f"{self.comm_session.evse_id}:::"
+                    f"{v2gtp_msg.payload.hex()}:::"
+                    f"{self.get_exi_ns(v2gtp_msg.payload_type).value}"
+                )
 
+        except V2GMessageValidationError as exc:
+            self.comm_session.current_state.stop_state_machine(
+                exc.reason,
+                None,
+                exc.response_code,
+                exc.message,
+                self.get_exi_ns(v2gtp_msg.payload_type),
+            )
+            return
         except EXIDecodingError as exc:
             logger.exception(f"{exc}")
             raise exc
@@ -299,6 +312,7 @@ class V2GCommunicationSession(SessionStateMachine):
         self.reader, self.writer = transport
         # For timeout, termination, and pausing notifications
         self.session_handler_queue = session_handler_queue
+        self.peer_name = self.writer.get_extra_info("peername")
         self.session_id: str = ""
         # Mutually agreed-upon ISO 15118 application protocol as result of SAP
         self.chosen_protocol: str = ""
@@ -370,9 +384,9 @@ class V2GCommunicationSession(SessionStateMachine):
         """
         if self.current_state.next_state == Pause:
             self.save_session_info()
-            terminate_or_pause = "Pause"
+            terminate_or_pause = SessionStopAction.PAUSE
         else:
-            terminate_or_pause = "Terminate"
+            terminate_or_pause = SessionStopAction.TERMINATE
 
         logger.info(
             f"The data link will {terminate_or_pause} in 2 seconds and "
@@ -381,16 +395,18 @@ class V2GCommunicationSession(SessionStateMachine):
         logger.info(f"Reason: {reason}")
 
         await asyncio.sleep(2)
-        # TODO Signal data link layer to either terminate or pause the data
-        #      link connection
+        # Signal data link layer to either terminate or pause the data
+        # link connection
+        if hasattr(self.comm_session, "evse_controller"):
+            await self.comm_session.evse_controller.update_data_link(terminate_or_pause)
         logger.info(f"{terminate_or_pause}d the data link")
         await asyncio.sleep(3)
-        self.writer.close()
-        await self.writer.wait_closed()
-        logger.info(
-            "TCP connection closed to peer with address "
-            f"{self.writer.get_extra_info('peername')}"
-        )
+        try:
+            self.writer.close()
+            await self.writer.wait_closed()
+        except ConnectionResetError as exc:
+            logger.info(str(exc))
+        logger.info("TCP connection closed to peer with address " f"{self.peer_name}")
 
     async def send(self, message: V2GTPMessage):
         """
@@ -434,7 +450,7 @@ class V2GCommunicationSession(SessionStateMachine):
                         StopNotification(
                             False,
                             stop_reason,
-                            self.writer.get_extra_info("peername"),
+                            self.peer_name,
                         )
                     )
                     return
@@ -453,9 +469,7 @@ class V2GCommunicationSession(SessionStateMachine):
                         f"while waiting for SupportedAppProtocolReq"
                     )
 
-                self.stop_reason = StopNotification(
-                    False, error_msg, self.writer.get_extra_info("peername")
-                )
+                self.stop_reason = StopNotification(False, error_msg, self.peer_name)
 
                 await self.stop(reason=error_msg)
                 self.session_handler_queue.put_nowait(self.stop_reason)
@@ -465,7 +479,10 @@ class V2GCommunicationSession(SessionStateMachine):
                 # This will create the values needed for the next state, such as
                 # next_state, next_v2gtp_message, next_message_payload_type etc.
                 await self.process_message(message)
-
+                if hasattr(self.comm_session, "evse_controller"):
+                    await self.comm_session.evse_controller.set_present_protocol_state(
+                        str(self.current_state)
+                    )
                 if self.current_state.next_v2gtp_msg:
                     # next_v2gtp_msg would not be set only if the next state is either
                     # Terminate or Pause on the EVCC side
@@ -506,7 +523,7 @@ class V2GCommunicationSession(SessionStateMachine):
                 self.stop_reason = StopNotification(
                     False,
                     stop_reason,
-                    self.writer.get_extra_info("peername"),
+                    self.peer_name,
                 )
 
                 await self.stop(stop_reason)
@@ -520,7 +537,7 @@ class V2GCommunicationSession(SessionStateMachine):
                 self.stop_reason = StopNotification(
                     False,
                     stop_reason,
-                    self.writer.get_extra_info("peername"),
+                    self.peer_name,
                 )
 
                 await self.stop(stop_reason)

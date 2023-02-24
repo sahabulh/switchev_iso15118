@@ -16,7 +16,7 @@ import socket
 from asyncio.streams import StreamReader, StreamWriter
 from typing import Dict, List, Optional, Tuple, Union
 
-from iso15118.secc.controller.interface import EVSEControllerInterface
+from iso15118.secc.controller.interface import EVSEControllerInterface, ServiceStatus
 from iso15118.secc.failed_responses import (
     init_failed_responses_din_spec_70121,
     init_failed_responses_iso_v2,
@@ -70,6 +70,7 @@ class SECCCommunicationSession(V2GCommunicationSession):
         session_handler_queue: asyncio.Queue,
         config: Config,
         evse_controller: EVSEControllerInterface,
+        evse_id: str,
     ):
         # Need to import here to avoid a circular import error
         # pylint: disable=import-outside-toplevel
@@ -82,6 +83,8 @@ class SECCCommunicationSession(V2GCommunicationSession):
         self.config = config
         # The EVSE controller that implements the interface EVSEControllerInterface
         self.evse_controller = evse_controller
+        # EVSE ID associated with this session
+        self.evse_id = evse_id
         # The authorization option(s) offered with ServiceDiscoveryRes in
         # ISO 15118-2 and with AuthorizationSetupRes in ISO 15118-20
         self.offered_auth_options: Optional[List[AuthEnum]] = []
@@ -92,7 +95,7 @@ class SECCCommunicationSession(V2GCommunicationSession):
         self.selected_auth_option: Optional[AuthEnum] = None
         # The generated challenge sent in PaymentDetailsRes. Its copy is expected in
         # AuthorizationReq (applies to Plug & Charge identification mode only)
-        self.gen_challenge: bytes = bytes(0)
+        self.gen_challenge: Optional[bytes] = None
         # In ISO 15118-2, the EVCCID is the MAC address, given as bytes.
         # In ISO 15118-20, the EVCCID is like a VIN number, given as str.
         self.evcc_id: Union[bytes, str, None] = None
@@ -145,6 +148,10 @@ class SECCCommunicationSession(V2GCommunicationSession):
         _, writer = transport
         return True if writer.get_extra_info("sslcontext") else False
 
+    async def stop(self, reason: str):
+        await self.evse_controller.stop_charger()
+        await super().stop(reason)
+
 
 class CommunicationSessionHandler:
     """
@@ -161,8 +168,13 @@ class CommunicationSessionHandler:
         self.list_of_tasks = []
         self.udp_server = None
         self.tcp_server = None
+        self.tcp_server_handler = None
         self.config = config
         self.evse_controller = evse_controller
+        self.udp_processor_lock = asyncio.Lock()
+
+        # List of server status events
+        self.status_event_list: List[asyncio.Event] = []
 
         # Set the selected EXI codec implementation
         EXI().set_exi_codec(codec)
@@ -176,7 +188,7 @@ class CommunicationSessionHandler:
         # associated ayncio.Task object (so we can cancel the task when needed)
         self.comm_sessions: Dict[str, (SECCCommunicationSession, asyncio.Task)] = {}
 
-    async def start_session_handler(self):
+    async def start_session_handler(self, iface: str):
         """
         This method is necessary, because python does not allow
         async def __init__.
@@ -184,21 +196,42 @@ class CommunicationSessionHandler:
         constructor.
         """
 
-        self.udp_server = UDPServer(self._rcv_queue, self.config.iface)
-        self.tcp_server = TCPServer(self._rcv_queue, self.config.iface)
+        self.udp_server = UDPServer(self._rcv_queue, iface)
+        udp_ready_event: asyncio.Event = asyncio.Event()
+        self.status_event_list.append(udp_ready_event)
+        self.tcp_server = TCPServer(self._rcv_queue, iface)
 
         self.list_of_tasks = [
             self.get_from_rcv_queue(self._rcv_queue),
-            self.udp_server.start(),
-            self.tcp_server.start_tls(),
+            self.udp_server.start(udp_ready_event),
+            self.check_status_task(True),
         ]
-
-        if not self.config.enforce_tls:
-            self.list_of_tasks.append(self.tcp_server.start_no_tls())
 
         logger.info("Communication session handler started")
 
         await wait_for_tasks(self.list_of_tasks)
+
+    def check_events(self) -> bool:
+        result: bool = True
+        for event in self.status_event_list:
+            if event.is_set() is False:
+                result = False
+                break
+        return result
+
+    async def check_ready_status(self) -> None:
+        # Wait until all flags are set
+        while self.check_events() is False:
+            await asyncio.sleep(0.01)
+
+    async def check_status_task(self, send_status_update: bool) -> None:
+        try:
+            await asyncio.wait_for(self.check_ready_status(), timeout=10)
+            if send_status_update:
+                await self.evse_controller.set_status(ServiceStatus.READY)
+        except asyncio.TimeoutError:
+            logger.error("Timeout: Servers failed to startup")
+            await self.evse_controller.set_status(ServiceStatus.ERROR)
 
     async def get_from_rcv_queue(self, queue: asyncio.Queue):
         """
@@ -221,7 +254,8 @@ class CommunicationSessionHandler:
                 if isinstance(notification, UDPPacketNotification):
                     await self.process_incoming_udp_packet(notification)
                 elif isinstance(notification, TCPClientNotification):
-                    logger.debug(
+                    self.udp_server.pause_udp_server()
+                    logger.info(
                         "TCP client connected, client address is "
                         f"{notification.ip_address}."
                     )
@@ -229,12 +263,16 @@ class CommunicationSessionHandler:
                     try:
                         comm_session, task = self.comm_sessions[notification.ip_address]
                         comm_session.resume()
-                    except KeyError:
+                    except (KeyError, ConnectionResetError) as e:
+                        if isinstance(e, ConnectionResetError):
+                            logger.info("Can't resume session. End and start new one.")
+                            await self.end_current_session(notification.ip_address)
                         comm_session = SECCCommunicationSession(
                             notification.transport,
                             self._rcv_queue,
                             self.config,
                             self.evse_controller,
+                            await self.evse_controller.get_evse_id(Protocol.UNKNOWN),
                         )
 
                     task = asyncio.create_task(
@@ -245,12 +283,8 @@ class CommunicationSessionHandler:
                     self.comm_sessions[notification.ip_address] = (comm_session, task)
                 elif isinstance(notification, StopNotification):
                     try:
-                        await cancel_task(
-                            self.comm_sessions[notification.peer_ip_address][1]
-                        )
-                        del self.comm_sessions[notification.peer_ip_address]
+                        await self.end_current_session(notification.peer_ip_address)
                     except KeyError:
-                        # TODO Need to check why this KeyError happens
                         pass
                 else:
                     logger.warning(
@@ -262,64 +296,99 @@ class CommunicationSessionHandler:
             finally:
                 queue.task_done()
 
+    async def end_current_session(self, peer_ip_address: str):
+        try:
+            await cancel_task(self.comm_sessions[peer_ip_address][1])
+            del self.comm_sessions[peer_ip_address]
+            await cancel_task(self.tcp_server_handler)
+        except Exception as e:
+            logger.warning(f"Unexpected error ending current session: {e}")
+
+        self.tcp_server_handler = None
+        self.udp_server.resume_udp_server()
+
+    async def start_tcp_server(self, with_tls: bool):
+        if self.tcp_server_handler is not None:
+            """A TCP server is already available, ready to respond.
+            (Perhaps created when the last SDP request was received.)
+            """
+            return
+
+        server_ready_event: asyncio.Event = asyncio.Event()
+        self.status_event_list.clear()
+        self.status_event_list.append(server_ready_event)
+        if with_tls:
+            self.tcp_server_handler = asyncio.create_task(
+                self.tcp_server.start_tls(server_ready_event)
+            )
+        else:
+            self.tcp_server_handler = asyncio.create_task(
+                self.tcp_server.start_no_tls(server_ready_event)
+            )
+        await self.check_status_task(False)
+
     async def process_incoming_udp_packet(self, message: UDPPacketNotification):
         """
         We expect this to be an SDP request from the UDP client. It could be an
         SDP response with or without
         PPD (pairing and positioning device -> ACD-pantograph in ISO 15118-20)
         """
+
         try:
             v2gtp_msg = V2GTPMessage.from_bytes(Protocol.UNKNOWN, message.data)
         except InvalidV2GTPMessageError as exc:
             logger.exception(exc)
             return
 
-        # An incoming datagram can only be an SDP request message, all
-        # other messages are sent via TCP
-        if v2gtp_msg.payload_type == ISOV2PayloadTypes.SDP_REQUEST:
+        async with self.udp_processor_lock:
+            # Process one incoming datagram at a time.
+            # An incoming datagram can only be an SDP request message, all
+            # other messages are sent via TCP
+            if v2gtp_msg.payload_type == ISOV2PayloadTypes.SDP_REQUEST:
+                try:
+                    sdp_request = SDPRequest.from_payload(v2gtp_msg.payload)
+                    logger.info(f"SDPRequest received: {sdp_request}")
 
-            try:
-                sdp_request = SDPRequest.from_payload(v2gtp_msg.payload)
-                logger.debug(f"SDPRequest received: {sdp_request}")
+                    if self.config.enforce_tls or sdp_request.security == Security.TLS:
+                        await self.start_tcp_server(True)
+                        port = self.tcp_server.port_tls
+                    else:
+                        await self.start_tcp_server(False)
+                        port = self.tcp_server.port_no_tls
 
-                if self.config.enforce_tls or sdp_request.security == Security.TLS:
-                    port = self.tcp_server.port_tls
-                else:
-                    port = self.tcp_server.port_no_tls
+                    # convert IPv6 address from presentation to numeric format
+                    ipv6_bytes = socket.inet_pton(
+                        socket.AF_INET6, self.tcp_server.ipv6_address_host
+                    )
 
-                # convert IPv6 address from presentation to numeric format
-                ipv6_bytes = socket.inet_pton(
-                    socket.AF_INET6, self.tcp_server.ipv6_address_host
+                    sdp_response = create_sdp_response(
+                        sdp_request, ipv6_bytes, port, self.tcp_server.is_tls_enabled
+                    )
+                except InvalidSDPRequestError as exc:
+                    logger.exception(
+                        f"{exc.__class__.__name__}, received bytes: "
+                        f"{v2gtp_msg.payload.hex()}"
+                    )
+                    return
+            elif v2gtp_msg.payload_type == ISOV20PayloadTypes.SDP_REQUEST_WIRELESS:
+                raise NotImplementedError(
+                    "The incoming datagram seems to be an SECC Discovery request "
+                    "message for wireless communication (used for ACD-P). "
+                    "This feature is not yet implemented."
                 )
-
-                sdp_response = create_sdp_response(
-                    sdp_request, ipv6_bytes, port, self.config.enforce_tls
-                )
-            except InvalidSDPRequestError as exc:
-                logger.exception(
-                    f"{exc.__class__.__name__}, received bytes: "
-                    f"{v2gtp_msg.payload.hex()}"
+            else:
+                logger.error(
+                    f"Incoming datagram of {len(message.data)} "
+                    f"bytes is no valid SDP request message"
                 )
                 return
-        elif v2gtp_msg.payload_type == ISOV20PayloadTypes.SDP_REQUEST_WIRELESS:
-            raise NotImplementedError(
-                "The incoming datagram seems to be an SECC Discovery request "
-                "message for wireless communication (used for ACD-P). "
-                "This feature is not yet implemented."
-            )
-        else:
-            logger.error(
-                f"Incoming datagram of {len(message.data)} "
-                f"bytes is no valid SDP request message"
-            )
-            return
 
-        # TODO Determine protocol version
-        v2gtp_msg = V2GTPMessage(
-            Protocol.ISO_15118_2,
-            ISOV2PayloadTypes.SDP_RESPONSE,
-            sdp_response.to_payload(),
-        )
-        logger.debug(f"Sending SDPResponse: {sdp_response}")
+            # TODO Determine protocol version
+            v2gtp_msg = V2GTPMessage(
+                Protocol.ISO_15118_2,
+                ISOV2PayloadTypes.SDP_RESPONSE,
+                sdp_response.to_payload(),
+            )
+            logger.info(f"Sending SDPResponse: {sdp_response}")
 
-        self.udp_server.send(v2gtp_msg, message.addr)
+            self.udp_server.send(v2gtp_msg, message.addr)

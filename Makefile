@@ -56,6 +56,8 @@ build: .generate_v2_certs
 	@# This conversion is required, otherwise we wouldn't be able to spawn the evcc start script.
 	@# @ is used as a separator and allows us to escape '/', so we can substitute the '/' itself
 	@sed -i.bkp 's@/secc/g@/evcc/g@g' iso15118/evcc/Dockerfile
+	@# Add a delay on EVCC to give SECC time to start up 
+	@sed -i'.bkp' -e 's@CMD /venv/bin/iso15118@CMD echo "Waiting for 5 seconds to start EVCC" \&\& sleep 5 \&\& /venv/bin/iso15118@g' iso15118/evcc/Dockerfile
 	docker-compose build
 
 # Run using dev env vars
@@ -81,27 +83,43 @@ poetry-shell:
 
 # Run evcc with python
 run-evcc:
-	$(shell which python) iso15118/evcc/main.py
+	$(shell which python) iso15118/evcc/main.py $(config)
 
 # Run secc with python
 run-secc:
 	$(shell which python) iso15118/secc/main.py
 
+# Run pytest on evcc
+test-evcc:
+	pytest tests/evcc
+
+# Run pytest on secc
+test-secc:
+	pytest tests/secc
+
+# Run pytest
+test:
+	poetry run pytest -vv --cov-config .coveragerc --cov-report term-missing  --durations=3 --cov=.
+
 # Run mypy checks
 mypy:
-	mypy --config-file mypy.ini iso15118 tests
+	poetry run mypy --config-file mypy.ini iso15118 tests
 
 # Reformat with isort and black
 reformat:
-	isort iso15118 tests && black --line-length=88 iso15118 tests
+	poetry run isort iso15118 tests && poetry run black --line-length=88 iso15118 tests
 
 # Run black checks
 black:
-	black --check --diff --line-length=88 iso15118 tests
+	poetry run black --check --diff --line-length=88 iso15118 tests
+
+# Run isort checks
+isort:
+	poetry run isort --check-only iso15118 tests
 
 # Run flake8 checks
 flake8:
-	flake8 --config .flake8 iso15118 tests
+	poetry run flake8 --config .flake8 iso15118 tests
 
 # Run black, isort, mypy, & flake8
 code-quality: reformat mypy flake8

@@ -3,41 +3,68 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from iso15118.secc import Config
 from iso15118.secc.states.iso15118_2_states import (
     Authorization,
     ChargeParameterDiscovery,
+    ChargingStatus,
     CurrentDemand,
     PaymentDetails,
     PowerDelivery,
+    ServiceDetail,
+    ServiceDiscovery,
     Terminate,
     WeldingDetection,
 )
 from iso15118.secc.states.secc_state import StateSECC
+from iso15118.shared.messages.datatypes import EVSENotification
 from iso15118.shared.messages.enums import (
     AuthEnum,
     AuthorizationStatus,
     AuthorizationTokenType,
-    Contactor,
+    CpState,
+    EVSEProcessing,
 )
-from iso15118.shared.messages.iso15118_2.datatypes import CertificateChain
+from iso15118.shared.messages.iso15118_2.body import ResponseCode
+from iso15118.shared.messages.iso15118_2.datatypes import (
+    ACEVSEStatus,
+    CertificateChain,
+    ServiceCategory,
+    ServiceDetails,
+    ServiceName,
+)
+from iso15118.shared.security import get_random_bytes
 from tests.secc.states.test_messages import (
     get_charge_parameter_discovery_req_message_departure_time_one_hour,
     get_charge_parameter_discovery_req_message_no_departure_time,
+    get_dummy_charging_status_req,
+    get_dummy_sa_schedule,
     get_dummy_v2g_message_authorization_req,
     get_dummy_v2g_message_payment_details_req,
     get_dummy_v2g_message_power_delivery_req_charge_start,
     get_dummy_v2g_message_power_delivery_req_charge_stop,
+    get_dummy_v2g_message_service_discovery_req,
     get_dummy_v2g_message_welding_detection_req,
+    get_power_delivery_req_charging_profile_in_boundary_invalid,
+    get_power_delivery_req_charging_profile_in_limits,
+    get_power_delivery_req_charging_profile_not_in_limits_span_over_sa,
+    get_power_delivery_req_charging_profile_out_of_boundary,
     get_v2g_message_power_delivery_req,
+    get_v2g_message_power_delivery_req_charging_profile_in_boundary_valid,
+    get_v2g_message_service_detail_req,
 )
 
 
 @patch("iso15118.shared.states.EXI.to_exi", new=Mock(return_value=b"01"))
 @pytest.mark.asyncio
-class TestEvScenarios:
+class TestV2GSessionScenarios:
     @pytest.fixture(autouse=True)
     def _comm_session(self, comm_secc_session_mock):
         self.comm_session = comm_secc_session_mock
+        self.comm_session.config = Config()
+        self.comm_session.is_tls = False
+        self.comm_session.writer = Mock()
+        self.comm_session.writer.get_extra_info = Mock()
 
     async def test_current_demand_to_power_delivery_when_power_delivery_received(
         self,
@@ -73,46 +100,24 @@ class TestEvScenarios:
         / "sample_certs"
         / "moRootCACert.der",
     )
-    async def test_payment_details_next_state_on_payment_details_req_auth_success(
-        self, mo_root_cert_path_mock
-    ):
-        self.comm_session.selected_auth_option = AuthEnum.PNC_V2
-
-        mock_is_authorized = AsyncMock(return_value=AuthorizationStatus.ACCEPTED)
-        self.comm_session.evse_controller.is_authorized = mock_is_authorized
-        payment_details = PaymentDetails(self.comm_session)
-        payment_details_req = get_dummy_v2g_message_payment_details_req()
-        await payment_details.process_message(payment_details_req)
-
-        assert isinstance(
-            self.comm_session.contract_cert_chain, CertificateChain
-        ), "Comm session certificate chain not populated"
-        assert (
-            payment_details.next_state == Authorization
-        ), "State did not progress after PaymentDetailsReq"
-        mock_is_authorized.assert_called_once()
-        req_body = payment_details_req.body.payment_details_req
-        assert mock_is_authorized.call_args[1]["id_token"] == req_body.emaid
-        assert mock_is_authorized.call_args[1]["id_token_type"] == (
-            AuthorizationTokenType.EMAID
-        )
-
-    @patch.object(
-        PaymentDetails,
-        "_mobility_operator_root_cert_path",
-        return_value=Path(__file__).parent.parent.parent
-        / "sample_certs"
-        / "moRootCACert.der",
+    @pytest.mark.parametrize(
+        "is_authorized_return_value, expected_next_state",
+        [
+            (AuthorizationStatus.ACCEPTED, Authorization),
+            (AuthorizationStatus.ONGOING, Authorization),
+            (AuthorizationStatus.REJECTED, Terminate),
+        ],
     )
-    async def test_payment_details_next_state_on_payment_details_req_auth_failed(
-        self, mo_root_cert_path_mock
+    async def test_payment_details_next_state_on_payment_details_req_auth(
+        self,
+        mo_root_cert_path_mock,
+        is_authorized_return_value: AuthorizationStatus,
+        expected_next_state: StateSECC,
     ):
-        self.comm_session.selected_auth_option = AuthEnum.PNC_V2
 
-        mock_is_authorized = AsyncMock(return_value=AuthorizationStatus.REJECTED)
+        self.comm_session.selected_auth_option = AuthEnum.PNC_V2
+        mock_is_authorized = AsyncMock(return_value=is_authorized_return_value)
         self.comm_session.evse_controller.is_authorized = mock_is_authorized
-        self.comm_session.writer = Mock()
-        self.comm_session.writer.get_extra_info = Mock()
         payment_details = PaymentDetails(self.comm_session)
         payment_details_req = get_dummy_v2g_message_payment_details_req()
         await payment_details.process_message(payment_details_req)
@@ -121,7 +126,7 @@ class TestEvScenarios:
             self.comm_session.contract_cert_chain, CertificateChain
         ), "Comm session certificate chain not populated"
         assert (
-            payment_details.next_state == Terminate
+            payment_details.next_state == expected_next_state
         ), "State did not progress after PaymentDetailsReq"
         mock_is_authorized.assert_called_once()
         req_body = payment_details_req.body.payment_details_req
@@ -131,33 +136,116 @@ class TestEvScenarios:
         )
 
     @pytest.mark.parametrize(
-        "is_authorized_return_value, expected_next_state",
+        "auth_type, is_authorized_return_value, expected_next_state,"
+        "expected_response_code, expected_evse_processing",
         [
-            (AuthorizationStatus.ACCEPTED, ChargeParameterDiscovery),
-            (AuthorizationStatus.ONGOING, Authorization),
-            pytest.param(
+            (
+                AuthEnum.EIM,
+                AuthorizationStatus.ACCEPTED,
+                ChargeParameterDiscovery,
+                ResponseCode.OK,
+                EVSEProcessing.FINISHED,
+            ),
+            (
+                AuthEnum.EIM,
+                AuthorizationStatus.ONGOING,
+                None,
+                ResponseCode.OK,
+                EVSEProcessing.ONGOING,
+            ),
+            (
+                AuthEnum.EIM,
                 AuthorizationStatus.REJECTED,
                 Terminate,
-                marks=pytest.mark.xfail(
-                    reason="REJECTED handling not implemented yet; "
-                    "see GitHub issue #54",
-                ),
+                ResponseCode.FAILED,
+                EVSEProcessing.FINISHED,
+            ),
+            (
+                AuthEnum.PNC_V2,
+                AuthorizationStatus.ACCEPTED,
+                ChargeParameterDiscovery,
+                ResponseCode.OK,
+                EVSEProcessing.FINISHED,
+            ),
+            (
+                AuthEnum.PNC_V2,
+                AuthorizationStatus.ONGOING,
+                None,
+                ResponseCode.OK,
+                EVSEProcessing.ONGOING,
+            ),
+            (
+                AuthEnum.PNC_V2,
+                AuthorizationStatus.REJECTED,
+                Terminate,
+                ResponseCode.FAILED,
+                EVSEProcessing.FINISHED,
             ),
         ],
     )
     async def test_authorization_next_state_on_authorization_request(
         self,
+        auth_type: AuthEnum,
         is_authorized_return_value: AuthorizationStatus,
         expected_next_state: StateSECC,
+        expected_response_code: ResponseCode,
+        expected_evse_processing: EVSEProcessing,
     ):
-        self.comm_session.selected_auth_option = AuthEnum.EIM
+
+        self.comm_session.selected_auth_option = auth_type
         mock_is_authorized = AsyncMock(return_value=is_authorized_return_value)
         self.comm_session.evse_controller.is_authorized = mock_is_authorized
+        # TODO: Include a real CertificateChain object and a message header
+        #       with a signature that must be return by
+        #      `get_dummy_v2g_message_authorization_req`
+        self.comm_session.contract_cert_chain = Mock()
+        self.comm_session.emaid = "dummy"
+        self.comm_session.gen_challenge = None
         authorization = Authorization(self.comm_session)
+        authorization.signature_verified_once = True
         await authorization.process_message(
             message=get_dummy_v2g_message_authorization_req()
         )
         assert authorization.next_state == expected_next_state
+        assert (
+            authorization.message.body.authorization_res.response_code
+            == expected_response_code
+        )
+        assert (
+            authorization.message.body.authorization_res.evse_processing
+            == expected_evse_processing
+        )
+
+    async def test_authorization_req_gen_challenge_invalid(self):
+        self.comm_session.selected_auth_option = AuthEnum.PNC_V2
+        self.comm_session.contract_cert_chain = Mock()
+        self.comm_session.gen_challenge = get_random_bytes(16)
+        id = "aReq"
+        gen_challenge = get_random_bytes(16)
+        authorization = Authorization(self.comm_session)
+
+        await authorization.process_message(
+            message=get_dummy_v2g_message_authorization_req(id, gen_challenge)
+        )
+        assert authorization.next_state == Terminate
+        assert (
+            authorization.message.body.authorization_res.response_code
+            == ResponseCode.FAILED_CHALLENGE_INVALID
+        )
+
+    async def test_authorization_req_gen_challenge_valid(self):
+        self.comm_session.selected_auth_option = AuthEnum.PNC_V2
+        self.comm_session.gen_challenge = get_random_bytes(16)
+        id = "aReq"
+        gen_challenge = self.comm_session.gen_challenge
+        self.comm_session.contract_cert_chain = Mock()
+        self.comm_session.emaid = "dummy"
+        authorization = Authorization(self.comm_session)
+        authorization.signature_verified_once = True
+        await authorization.process_message(
+            message=get_dummy_v2g_message_authorization_req(id, gen_challenge)
+        )
+        assert authorization.next_state == ChargeParameterDiscovery
 
     async def test_charge_parameter_discovery_res_v2g2_303(self):
         # V2G2-303 : Sum of individual time intervals shall match the period of time
@@ -280,6 +368,58 @@ class TestEvScenarios:
 
             assert found_entry_indicating_start_without_delay is True
 
+    @pytest.mark.parametrize(
+        "power_delivery_message,expected_state, expected_response_code",
+        [
+            (
+                get_v2g_message_power_delivery_req_charging_profile_in_boundary_valid(),
+                CurrentDemand,
+                ResponseCode.OK,
+            ),
+            (
+                get_power_delivery_req_charging_profile_in_boundary_invalid(),
+                Terminate,
+                ResponseCode.FAILED_CHARGING_PROFILE_INVALID,
+            ),
+            (
+                get_power_delivery_req_charging_profile_in_limits(),
+                CurrentDemand,
+                ResponseCode.OK,
+            ),
+            (
+                get_power_delivery_req_charging_profile_not_in_limits_span_over_sa(),
+                Terminate,
+                ResponseCode.FAILED_CHARGING_PROFILE_INVALID,
+            ),
+            (
+                get_power_delivery_req_charging_profile_out_of_boundary(),
+                Terminate,
+                ResponseCode.FAILED_CHARGING_PROFILE_INVALID,
+            ),
+        ],
+    )
+    async def test_charge_parameter_discovery_req_v2g2_225(
+        self, power_delivery_message, expected_state, expected_response_code
+    ):
+        # [V2G2-225] The SECC shall send the negative ResponseCode
+        # FAILED_ChargingProfileInvalid in
+        # the PowerDelivery response message if the EVCC sends a ChargingProfile which
+        # is not adhering to the PMax values of all PMaxScheduleEntry elements according
+        # to the chosen SAScheduleTuple element in the last ChargeParameterDiscoveryRes
+        # message sent by the SECC.
+        self.comm_session.writer = Mock()
+        self.comm_session.writer.get_extra_info = Mock()
+
+        self.comm_session.offered_schedules = get_dummy_sa_schedule()
+        power_delivery = PowerDelivery(self.comm_session)
+
+        await power_delivery.process_message(message=power_delivery_message)
+        assert power_delivery.next_state is expected_state
+        assert (
+            power_delivery.message.body.power_delivery_res.response_code
+            is expected_response_code
+        )
+
     async def test_power_delivery_set_hlc_charging(
         self,
     ):
@@ -301,32 +441,103 @@ class TestEvScenarios:
 
         self.comm_session.evse_controller.set_hlc_charging.assert_called_with(False)
 
-    async def test_power_delivery_contactor_close(
-        self,
+    @pytest.mark.parametrize(
+        "get_state_return_value, expected_next_state",
+        [
+            (CpState.B1, Terminate),
+            (CpState.B2, Terminate),
+            (CpState.C1, Terminate),
+            (CpState.C2, CurrentDemand),
+            (CpState.D1, Terminate),
+            (CpState.D2, CurrentDemand),
+        ],
+    )
+    async def test_power_delivery_state_c(
+        self, get_state_return_value, expected_next_state
     ):
+
         power_delivery = PowerDelivery(self.comm_session)
+        mock_get_cp_state = AsyncMock(return_value=get_state_return_value)
+        self.comm_session.evse_controller.get_cp_state = mock_get_cp_state
         await power_delivery.process_message(
             message=get_dummy_v2g_message_power_delivery_req_charge_start()
         )
-        assert self.comm_session.evse_controller.contactor is Contactor.CLOSED
+        assert power_delivery.next_state is expected_next_state
 
-    async def test_power_delivery_contactor_open(
-        self,
-    ):
-        power_delivery = PowerDelivery(self.comm_session)
-        await power_delivery.process_message(
-            message=get_dummy_v2g_message_power_delivery_req_charge_stop()
+    async def test_service_discovery_req_unexpected_state(self):
+        self.comm_session.selected_auth_option = AuthEnum.PNC_V2
+        self.comm_session.config.free_charging_service = False
+        service_discovery = ServiceDiscovery(self.comm_session)
+        await service_discovery.process_message(
+            message=get_dummy_v2g_message_service_discovery_req()
         )
-        assert self.comm_session.evse_controller.contactor is Contactor.OPENED
-
-    async def test_power_delivery_contactor_get_state(
-        self,
-    ):
-        power_delivery = PowerDelivery(self.comm_session)
-        await power_delivery.process_message(
-            message=get_dummy_v2g_message_power_delivery_req_charge_start()
+        await service_discovery.process_message(
+            message=get_dummy_v2g_message_service_discovery_req()
         )
+        assert service_discovery.next_state is Terminate
         assert (
-            await self.comm_session.evse_controller.get_contactor_state()
-            is Contactor.CLOSED
+            service_discovery.message.body.service_discovery_res.response_code
+            is ResponseCode.FAILED_SEQUENCE_ERROR
+        )
+
+    async def test_charging_status_evse_status(self):
+        charging_status = ChargingStatus(self.comm_session)
+        self.comm_session.selected_schedule = 1
+        await charging_status.process_message(message=get_dummy_charging_status_req())
+
+        charging_status_res = charging_status.message.body.charging_status_res
+        assert charging_status_res.ac_evse_status == ACEVSEStatus(
+            notification_max_delay=0,
+            evse_notification=EVSENotification.NONE,
+            rcd=False,
+        )
+
+    async def test_charging_status_evse_status_altered(self):
+        charging_status = ChargingStatus(self.comm_session)
+        self.comm_session.selected_schedule = 1
+
+        async def get_ac_evse_status_patch():
+            return ACEVSEStatus(
+                notification_max_delay=0,
+                evse_notification=EVSENotification.NONE,
+                rcd=True,
+            )
+
+        self.comm_session.evse_controller.get_ac_evse_status = get_ac_evse_status_patch
+        await charging_status.process_message(message=get_dummy_charging_status_req())
+        charging_status_res = charging_status.message.body.charging_status_res
+        assert charging_status_res.ac_evse_status == await get_ac_evse_status_patch()
+
+    @pytest.mark.parametrize(
+        "service_id, response_code",
+        [
+            (2, ResponseCode.OK),
+            (3, ResponseCode.FAILED_SERVICE_ID_INVALID),
+        ],
+    )
+    async def test_service_detail_service_id_is_in_offered_list(
+        self, service_id, response_code
+    ):
+        self.comm_session.selected_auth_option = AuthEnum.PNC_V2
+        self.comm_session.config.free_charging_service = False
+        self.comm_session.writer = Mock()
+        self.comm_session.writer.get_extra_info = Mock()
+
+        cert_install_service = ServiceDetails(
+            service_id=2,
+            service_name=ServiceName.CERTIFICATE,
+            service_category=ServiceCategory.CERTIFICATE,
+            free_service=True,
+        )
+
+        self.comm_session.offered_services = []
+        self.comm_session.offered_services.append(cert_install_service)
+        service_details = ServiceDetail(self.comm_session)
+        await service_details.process_message(
+            message=get_v2g_message_service_detail_req(service_id=service_id)
+        )
+        assert isinstance(self.comm_session.current_state, ServiceDetail)
+        assert (
+            service_details.message.body.service_detail_res.response_code
+            is response_code
         )

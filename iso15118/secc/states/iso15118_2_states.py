@@ -3,7 +3,7 @@ This module contains the SECC's States used to process the EVCC's incoming
 V2GMessage objects of the ISO 15118-2 protocol, from SessionSetupReq to
 SessionStopReq.
 """
-
+import asyncio
 import base64
 import logging
 import time
@@ -27,17 +27,13 @@ from iso15118.shared.messages.app_protocol import (
     SupportedAppProtocolReq,
     SupportedAppProtocolRes,
 )
-from iso15118.shared.messages.datatypes import (
-    DCEVSEChargeParameter,
-    DCEVSEStatus,
-    EVSENotification,
-)
+from iso15118.shared.messages.datatypes import DCEVSEChargeParameter, DCEVSEStatus
 from iso15118.shared.messages.din_spec.msgdef import V2GMessage as V2GMessageDINSPEC
 from iso15118.shared.messages.enums import (
     AuthEnum,
     AuthorizationStatus,
     AuthorizationTokenType,
-    Contactor,
+    CpState,
     DCEVErrorCode,
     EVSEProcessing,
     IsolationLevel,
@@ -88,6 +84,7 @@ from iso15118.shared.messages.iso15118_2.datatypes import (
     CertificateChain,
     ChargeProgress,
     ChargeService,
+    ChargingSession,
     DHPublicKey,
     EncryptedPrivateKey,
     EnergyTransferModeList,
@@ -123,10 +120,11 @@ from iso15118.shared.security import (
     get_random_bytes,
     load_cert,
     load_priv_key,
+    log_certs_details,
     verify_certs,
     verify_signature,
 )
-from iso15118.shared.states import Base64, State, Terminate
+from iso15118.shared.states import Base64, Pause, State, Terminate
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +253,13 @@ class ServiceDiscovery(StateSECC):
             )
             return
 
+        if msg.body.service_discovery_req and not self.expecting_service_discovery_req:
+            self.stop_state_machine(
+                f"{str(message)}' not accepted in state " f"{str(self)}",
+                message,
+                ResponseCode.FAILED_SEQUENCE_ERROR,
+            )
+            return
         service_discovery_req: ServiceDiscoveryReq = msg.body.service_discovery_req
         service_discovery_res = await self.get_services(
             service_discovery_req.service_category
@@ -289,11 +294,14 @@ class ServiceDiscovery(StateSECC):
             else:
                 auth_options.append(AuthEnum.PNC_V2)
         else:
-            supported_auth_options = self.comm_session.config.supported_auth_options
-            if AuthEnum.EIM in supported_auth_options:
+            if self.comm_session.evse_controller.is_eim_authorized():
                 auth_options.append(AuthEnum.EIM_V2)
-            if AuthEnum.PNC in supported_auth_options and self.comm_session.is_tls:
-                auth_options.append(AuthEnum.PNC_V2)
+            else:
+                supported_auth_options = self.comm_session.config.supported_auth_options
+                if AuthEnum.EIM in supported_auth_options:
+                    auth_options.append(AuthEnum.EIM_V2)
+                if AuthEnum.PNC in supported_auth_options and self.comm_session.is_tls:
+                    auth_options.append(AuthEnum.PNC_V2)
 
         self.comm_session.offered_auth_options = auth_options
 
@@ -403,6 +411,30 @@ class ServiceDetail(StateSECC):
             return
 
         service_detail_req: ServiceDetailReq = msg.body.service_detail_req
+
+        is_found = False
+        for service_details in self.comm_session.offered_services:
+            if service_detail_req.service_id == service_details.service_id:
+                is_found = True
+                break
+
+        if not is_found:
+            # [V2G2-425] The SECC shall respond with a negative ResponseCode
+            # 'FAILED_ServiceIDInvalid'
+            # if the EVCC provided a not previously retrieved ServiceID in the
+            # ServiceDetailsReq.
+            error_service_detail_res = ServiceDetailRes(
+                response_code=ResponseCode.FAILED_SERVICE_ID_INVALID,
+                service_id=service_detail_req.service_id,
+            )
+            self.create_next_message(
+                None,
+                error_service_detail_res,
+                Timeouts.V2G_SECC_SEQUENCE_TIMEOUT,
+                Namespace.ISO_V2_MSG_DEF,
+            )
+            logger.error(f"Service ID is invalid for {message}")
+            return
 
         parameter_set: List[ParameterSet] = []
 
@@ -647,9 +679,10 @@ class CertificateInstallation(StateSECC):
                     signature,
                 ) = self.generate_certificate_installation_res()
         except Exception as e:
-            logger.error(f"Error building CertificateInstallationRes: {e}")
+            error = f"Error building CertificateInstallationRes: {e}"
+            logger.error(error)
             self.stop_state_machine(
-                str(e),
+                error,
                 message,
                 ResponseCode.FAILED_NO_CERTIFICATE_AVAILABLE,
             )
@@ -864,6 +897,10 @@ class PaymentDetails(StateSECC):
         try:
             leaf_cert = payment_details_req.cert_chain.certificate
             sub_ca_certs = payment_details_req.cert_chain.sub_certificates.certificates
+
+            # Logging MO certificate and chain details to help with debugging.
+            log_certs_details([leaf_cert])
+            log_certs_details(sub_ca_certs)
             # TODO There should be an OCPP setting that determines whether
             #      or not the charging station should verify (is in
             #      possession of MO or V2G Root certificates) or if it
@@ -871,13 +908,13 @@ class PaymentDetails(StateSECC):
             # TODO Either an MO Root certificate or a V2G Root certificate
             #      could be used to verify, need to be flexible with regards
             #      to the PKI that is used.
-            # TODO GitHub#94: If root_cert is not present, we should
-            #      fall back to sending the leaf and sub-CA certificates,
-            #      allowing the CSMS to attempt to retrieve the root certificate
-            #      and construct the OCSP data itself.
             root_cert_path = self._mobility_operator_root_cert_path()
-            root_cert = load_cert(root_cert_path)
-            verify_certs(leaf_cert, sub_ca_certs, root_cert)
+            try:
+                root_cert = load_cert(root_cert_path)
+                verify_certs(leaf_cert, sub_ca_certs, root_cert)
+            except FileNotFoundError:
+                logger.warning(f"MO Root Cert cannot be found {root_cert_path}")
+                root_cert = None
 
             # Note that the eMAID format (14 or 15 characters) will be validated
             # by the definition of the eMAID type in
@@ -901,11 +938,14 @@ class PaymentDetails(StateSECC):
                 )
             )
 
-            if authorization_result == AuthorizationStatus.ACCEPTED:
-
+            if authorization_result in [
+                AuthorizationStatus.ACCEPTED,
+                AuthorizationStatus.ONGOING,
+            ]:
+                self.comm_session.gen_challenge = get_random_bytes(16)
                 payment_details_res = PaymentDetailsRes(
                     response_code=ResponseCode.OK,
-                    gen_challenge=get_random_bytes(16),
+                    gen_challenge=self.comm_session.gen_challenge,
                     evse_timestamp=time.time(),
                 )
 
@@ -916,18 +956,12 @@ class PaymentDetails(StateSECC):
                     Namespace.ISO_V2_MSG_DEF,
                 )
             else:
-                # TODO GitHub#54: handle ONGOING case, and REJECTED more fully
-                payment_details_res = PaymentDetailsRes(
-                    response_code=ResponseCode.FAILED,
-                    gen_challenge=get_random_bytes(16),
-                    evse_timestamp=time.time(),
-                )
-
-                self.create_next_message(
-                    Terminate,
-                    SessionStopRes(response_code=ResponseCode.FAILED),
-                    Timeouts.V2G_SECC_SEQUENCE_TIMEOUT,
-                    Namespace.ISO_V2_MSG_DEF,
+                # TODO: investigate if it is feasible to get a more detailed
+                # response code error
+                self.stop_state_machine(
+                    "Authorization was rejected",
+                    message,
+                    ResponseCode.FAILED_CERTIFICATE_NOT_ALLOWED_AT_THIS_EVSE,
                 )
 
         except (
@@ -982,19 +1016,16 @@ class Authorization(StateSECC):
     and the state machine can move on to the `ChargeParameterDiscovery` state,
     otherwise will stay in this state and answer to the EV with
     `EVSEProcessing=Ongoing`.
-
-    TODO: This method is incomplete, as it wont allow answering with a Failed
-          response, for a rejected authorization. `is_authorized` shall return
-          one out of three responses: `Ongoing`, `Accepted` or `Rejected`.
-          In case of Rejected and according to table 112 from ISO 15118-2, the
-          errors allowed to be used are: FAILED, FAILED_Challenge_Invalid or
-          FAILED_Certificate_Revoked.
-          Please check: https://dev.azure.com/switch-ev/Josev/_backlogs/backlog/Josev%20Team/Stories/?workitem=1049  # noqa: E501
-
     """
 
     def __init__(self, comm_session: SECCCommunicationSession):
         super().__init__(comm_session, Timeouts.V2G_SECC_SEQUENCE_TIMEOUT)
+        # According to requirement [V2G2-684], in case of PnC,
+        # the first AuthorizationReq will contain the message
+        # signature in the header, but if the EVSEProcessing result is Ongoing
+        # then the upcoming requests won't contain the signature. Thus, we
+        # only do the signature validation once
+        self.signature_verified_once = False
 
     async def process_message(
         self,
@@ -1024,40 +1055,49 @@ class Authorization(StateSECC):
                 )
                 return
 
-            if not verify_signature(
-                signature=msg.header.signature,
-                elements_to_sign=[
-                    (
-                        authorization_req.id,
-                        EXI().to_exi(authorization_req, Namespace.ISO_V2_MSG_DEF),
-                    )
-                ],
-                leaf_cert=self.comm_session.contract_cert_chain.certificate,
-            ):
-                self.stop_state_machine(
-                    "Unable to verify signature of AuthorizationReq",
-                    message,
-                    ResponseCode.FAILED_SIGNATURE_ERROR,
-                )
-                return
+            if not self.signature_verified_once:
+                self.signature_verified_once = True
 
-        # TODO: The authorization process can start already in the PaymentDetailsReq.
-        # An evse_controller method must be crated to receive as arguments
-        # the eMAID, the contract certificate chain (leaf, MO-Sub-1 and MO-Sub-2)
-        # and the OCSP iso15118CertificateHashData as mentioned in OCPP 2.0.1
-        # use case C07.
-        # If the current `is_authorized` is to be used, then we need to modify
-        # it to add those arguments.
-        # Note: The contract chain is saved within the
-        # self.comm_session.contract_cert_chain attribute.
+                # [V2G2-475] The message 'AuthorizationRes' shall contain
+                # the ResponseCode 'FAILED_ChallengeInvalid' if the challenge
+                # response contained in the AuthorizationReq message in attribute
+                # GenChallenge is not valid versus the provided GenChallenge
+                # in PaymentDetailsRes.
+                if authorization_req.gen_challenge != self.comm_session.gen_challenge:
+                    self.stop_state_machine(
+                        "[V2G2-475] GenChallenge is not the same in PaymentDetailsRes",
+                        message,
+                        ResponseCode.FAILED_CHALLENGE_INVALID,
+                    )
+                    return
+
+                if not verify_signature(
+                    signature=msg.header.signature,
+                    elements_to_sign=[
+                        (
+                            authorization_req.id,
+                            EXI().to_exi(authorization_req, Namespace.ISO_V2_MSG_DEF),
+                        )
+                    ],
+                    leaf_cert=self.comm_session.contract_cert_chain.certificate,
+                ):
+                    self.stop_state_machine(
+                        "Unable to verify signature of AuthorizationReq",
+                        message,
+                        ResponseCode.FAILED_SIGNATURE_ERROR,
+                    )
+                    return
+
         auth_status: EVSEProcessing = EVSEProcessing.ONGOING
-        next_state: Type["State"] = Authorization
+        next_state: Optional[Type["State"]] = Authorization
         # TODO: how should we obtain/hold the token for EIM?  Other cases?
         id_token = (
             self.comm_session.emaid
             if self.comm_session.selected_auth_option == AuthEnum.PNC_V2
             else None
         )
+        # note that the certificate_chain and hashed_data are empty here
+        # as they were already send previously in the PaymentDetails state
         authorization_result = await self.comm_session.evse_controller.is_authorized(
             id_token=id_token,
             id_token_type=(
@@ -1070,10 +1110,30 @@ class Authorization(StateSECC):
         if authorization_result == AuthorizationStatus.ACCEPTED:
             auth_status = EVSEProcessing.FINISHED
             next_state = ChargeParameterDiscovery
-
-        # TODO GitHub#54: handle REJECTED case
-        # TODO Need to distinguish between ONGOING and
-        #      ONGOING_WAITING_FOR_CUSTOMER
+        elif authorization_result == AuthorizationStatus.REJECTED:
+            # according to table 112 of ISO 15118-2, the Response code
+            # for this message can only be one of the following:
+            # FAILED, FAILED_Challenge_Invalid,
+            # Failed_SEQUENCE_ERROR, Failed_SIGNATURE_ERROR,
+            # FAILED_Certificate_Revoked and Failed_UNKNOWN_SESSION
+            self.stop_state_machine(
+                "Authorization was rejected",
+                message,
+                ResponseCode.FAILED,
+            )
+            return
+        else:
+            # this means we fall into the ongoing case
+            auth_status = EVSEProcessing.ONGOING
+            next_state = None
+            # According to requirement [V2G2-854]
+            # If identification mode EIM has been selected by the
+            # parameter SelectedPaymentOption equal to "External Payment"
+            # in message ServicePaymentSelectReq and no positive EIM information
+            # is available an SECC shall set the parameter EVSEProcessing to
+            # „Ongoing_WaitingForCustomerInteraction“ in AuthorizationRes.
+            if self.comm_session.selected_auth_option == AuthEnum.EIM_V2:
+                auth_status = EVSEProcessing.ONGOING_WAITING_FOR_CUSTOMER
 
         authorization_res = AuthorizationRes(
             response_code=ResponseCode.OK, evse_processing=auth_status
@@ -1297,20 +1357,17 @@ class ChargeParameterDiscovery(StateSECC):
         for schedule_tuples in sa_schedules:
             schedule_duration = 0
 
-            if schedule_tuples.p_max_schedule.schedule_entries is not None:
-                first_entry_start_time = (
-                    schedule_tuples.p_max_schedule.schedule_entries[
-                        0
-                    ].time_interval.start
-                )
-                last_entry_start_time = schedule_tuples.p_max_schedule.schedule_entries[
+            p_max_sched = schedule_tuples.p_max_schedule
+            if p_max_sched.schedule_entries is not None:
+                first_entry_start_time = p_max_sched.schedule_entries[
+                    0
+                ].time_interval.start
+                last_entry_start_time = p_max_sched.schedule_entries[
                     -1
                 ].time_interval.start
-                last_entry_schedule_duration = (
-                    schedule_tuples.p_max_schedule.schedule_entries[
-                        -1
-                    ].time_interval.duration
-                )
+                last_entry_schedule_duration = p_max_sched.schedule_entries[
+                    -1
+                ].time_interval.duration
                 schedule_duration = (
                     last_entry_start_time - first_entry_start_time
                 ) + last_entry_schedule_duration
@@ -1443,7 +1500,21 @@ class PowerDelivery(StateSECC):
         #     )
         #     return
 
-        # TODO We should also do a more detailed check of the charging profile
+        # [V2G2-225] The SECC shall send the negative ResponseCode
+        # FAILED_ChargingProfileInvalid in
+        # the PowerDelivery response message if the EVCC sends a ChargingProfile which
+        # is not adhering to the PMax values of all PMaxScheduleEntry elements according
+        # to the chosen SAScheduleTuple element in the last ChargeParameterDiscoveryRes
+        # message sent by the SECC.
+        if power_delivery_req.charging_profile:
+            if not self._is_charging_profile_valid(power_delivery_req):
+                self.stop_state_machine(
+                    "[V2G2-225] ChargingProfile is not adhering to the Pmax values in "
+                    "ChargeParameterDiscoveryRes",
+                    message,
+                    ResponseCode.FAILED_CHARGING_PROFILE_INVALID,
+                )
+                return
 
         logger.debug(f"ChargeProgress set to {power_delivery_req.charge_progress}")
 
@@ -1457,12 +1528,21 @@ class PowerDelivery(StateSECC):
             # [V2G2-847] - The EV shall signal CP State C or D no later than 250ms
             # after sending the first PowerDeliveryReq with ChargeProgress equals
             # "Start" within V2G Communication SessionPowerDeliveryReq.
+
             # [V2G2-860] - If no error is detected, the SECC shall close the Contactor
             # no later than 3s after measuring CP State C or D.
-            # TODO: Before closing the contactor, we may need to check to
+            # Before closing the contactor, we need to check to
             # ensure the CP is in state C or D
-            contactor_state = await self.comm_session.evse_controller.close_contactor()
-            if contactor_state != Contactor.CLOSED:
+            if not await self.wait_for_state_c_or_d():
+                logger.error("Cp state is not C2 or D2 after PowerDeliveryReq")
+                self.stop_state_machine(
+                    "State is not C or D",
+                    message,
+                    ResponseCode.FAILED,
+                )
+                return
+
+            if not await self.comm_session.evse_controller.is_contactor_closed():
                 self.stop_state_machine(
                     "Contactor didnt close",
                     message,
@@ -1495,9 +1575,8 @@ class PowerDelivery(StateSECC):
             await self.comm_session.evse_controller.stop_charger()
             # 2nd once the energy transfer is properly interrupted,
             # the contactor(s) may open
-            contactor_state = await self.comm_session.evse_controller.open_contactor()
 
-            if contactor_state != Contactor.OPENED:
+            if not await self.comm_session.evse_controller.is_contactor_opened():
                 self.stop_state_machine(
                     "Contactor didnt open",
                     message,
@@ -1544,6 +1623,128 @@ class PowerDelivery(StateSECC):
         )
 
         self.expecting_power_delivery_req = False
+
+    async def wait_for_state_c_or_d(self) -> bool:
+        # [V2G2 - 847] The EV shall signal CP State C or D no later than 250ms
+        # after sending the first PowerDeliveryReq with ChargeProgress equals
+        # "Start" within V2G Communication SessionPowerDeliveryReq.
+        STATE_C_TIMEOUT = 0.25
+
+        async def check_state():
+            while await self.comm_session.evse_controller.get_cp_state() not in [
+                CpState.C2,
+                CpState.D2,
+            ]:
+                await asyncio.sleep(0.05)
+            logger.debug(
+                f"State is " f"{await self.comm_session.evse_controller.get_cp_state()}"
+            )
+            return True
+
+        try:
+            return await asyncio.wait_for(
+                check_state(),
+                timeout=STATE_C_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            # try one more time to get the latest state
+            return await self.comm_session.evse_controller.get_cp_state() in [
+                CpState.C2,
+                CpState.D2,
+            ]
+
+    def _is_charging_profile_valid(self, power_delivery_req: PowerDeliveryReq) -> bool:
+        for schedule in self.comm_session.offered_schedules:
+            if schedule.sa_schedule_tuple_id == power_delivery_req.sa_schedule_tuple_id:
+                schedule_entries = schedule.p_max_schedule.schedule_entries
+                # schedule_entries shall look like [PMaxScheduleEntry_0,
+                # PMaxScheduleEntry_1, ...]. The enumerate will pair an index with
+                # each list entry: (0, PMaxScheduleEntry_0), (1,
+                # PMaxScheduleEntry_1), ...
+                ev_profile = power_delivery_req.charging_profile
+                ev_profile_entries = ev_profile.profile_entries
+                cached_start_idx_ev: int = 0
+                last_ev_running_idx: int = 0
+
+                for idx, sa_profile_entry in enumerate(schedule_entries):
+                    sa_profile_entry_start = sa_profile_entry.time_interval.start
+
+                    sa_entry_pmax = (
+                        sa_profile_entry.p_max.value
+                        * 10**sa_profile_entry.p_max.multiplier
+                    )
+
+                    try:
+                        # By getting the next entry/slot, we can know when
+                        # the current entry ends
+                        next_sa_profile_entry = schedule_entries[idx + 1]
+                        sa_profile_entry_end = next_sa_profile_entry.time_interval.start
+
+                    except IndexError:
+                        # As the index is out of rage, it signals this is
+                        # the final entry of the sa profile. The last entry
+                        # must have a duration field, so we can calculate
+                        # the end of the period summing the relative start
+                        # of the entry with the duration of it
+                        sa_profile_entry_end = (
+                            sa_profile_entry_start
+                            + sa_profile_entry.time_interval.duration
+                        )
+                    # The cached index and last ev running index are helpers that
+                    # allow the for loop to start in the ev profile entry belonging
+                    # to the start range of the SA entry. This avoids looping all
+                    # over the ev profiles again for each SA entry schedule.
+                    # For example, if the SA time schedule is
+                    # [0; 1000[ [1000; 2000[ [2000; 3000[
+                    # And the EV profile time schedule is
+                    # [0, 100[ [100, 400[ [400; 1000[ [1000, inf+[
+                    # The first three entries of the ev profile belong
+                    # to the time range [0; 1000[ of the SA schedule and
+                    # if the EV power, for those three entries
+                    # does not surpass the limit imposed by the SA schedule
+                    # during that time, then for the next loop iteration,
+                    # we dont need to go test those EV time entries again,
+                    # as they dont belong to the [1000; 2000[ SA time schedule slot.
+                    cached_start_idx_ev += last_ev_running_idx
+                    last_ev_running_idx = 0
+                    # fmt: off
+                    for (ev_profile_idx, ev_profile_entry) in enumerate(
+                        ev_profile_entries[cached_start_idx_ev:]
+                    ):
+                        _is_last_ev_profile = (
+                            ev_profile_entry.start == ev_profile_entries[-1].start
+                        )
+
+                        if (ev_profile_entry.start < sa_profile_entry_end or _is_last_ev_profile ): # noqa
+                            ev_entry_pmax = (ev_profile_entry.max_power.value * 10 ** ev_profile_entry.max_power.multiplier)  # noqa
+                            if ev_entry_pmax > sa_entry_pmax:
+                                logger.error(
+                                    f"EV Profile start {ev_profile_entry.start}s"
+                                    f"is out of power range: "
+                                    f"EV Max {ev_entry_pmax} W > EVSE Max "
+                                    f"{sa_entry_pmax} W \n"
+                                )
+                                return False
+
+                            if not _is_last_ev_profile:
+                                ev_profile_entry_end = ev_profile_entries[
+                                    ev_profile_idx + 1
+                                ].start
+                                if ev_profile_entry_end <= sa_profile_entry_end:
+                                    last_ev_running_idx = ev_profile_idx + 1
+                            else:
+                                logger.debug(
+                                    f"EV last Profile start "
+                                    f"{ev_profile_entry.start}s is "
+                                    f"within time range [{sa_profile_entry_start}; "
+                                    f"{sa_profile_entry_end}[ and power range: "
+                                    f"EV Max {ev_entry_pmax} W <= EVSE Max "
+                                    f"{sa_entry_pmax} W \n"
+                                )
+                        else:
+                            break
+                    # fmt: on
+        return True
 
 
 class MeteringReceipt(StateSECC):
@@ -1696,9 +1897,12 @@ class SessionStop(StateSECC):
             f"EV Requested to {session_status} the communication session",
             self.comm_session.writer.get_extra_info("peername"),
         )
-
+        if msg.body.session_stop_req.charging_session == ChargingSession.PAUSE:
+            next_state = Pause
+        else:
+            next_state = Terminate
         self.create_next_message(
-            Terminate,
+            next_state,
             SessionStopRes(response_code=ResponseCode.OK),
             Timeouts.V2G_SECC_SEQUENCE_TIMEOUT,
             Namespace.ISO_V2_MSG_DEF,
@@ -1769,17 +1973,12 @@ class ChargingStatus(StateSECC):
 
         # We don't care about signed meter values from the EVCC, but if you
         # do, then set receipt_required to True and set the field meter_info
+        evse_controller = self.comm_session.evse_controller
         charging_status_res = ChargingStatusRes(
             response_code=ResponseCode.OK,
-            evse_id=await self.comm_session.evse_controller.get_evse_id(
-                Protocol.ISO_15118_2
-            ),
+            evse_id=await evse_controller.get_evse_id(Protocol.ISO_15118_2),
             sa_schedule_tuple_id=self.comm_session.selected_schedule,
-            ac_evse_status=ACEVSEStatus(
-                notification_max_delay=0,
-                evse_notification=EVSENotification.NONE,
-                rcd=False,
-            ),
+            ac_evse_status=await evse_controller.get_ac_evse_status(),
             # TODO Could maybe request an OCPP setting that determines
             #      whether or not a receipt is required and when
             #      (probably only makes sense at the beginning and end of
@@ -1858,43 +2057,47 @@ class CableCheck(StateSECC):
             return
 
         if not self.cable_check_req_was_received:
+            # First CableCheckReq received. Start cable check.
+            await self.comm_session.evse_controller.start_cable_check()
+
             # Requirement in 6.4.3.106 of the IEC 61851-23
             # Any relays in the DC output circuit of the DC station shall
             # be closed during the insulation test
-            contactor_state = await self.comm_session.evse_controller.close_contactor()
-            if contactor_state != Contactor.CLOSED:
+            if not await self.comm_session.evse_controller.is_contactor_closed():
                 self.stop_state_machine(
                     "Contactor didnt close for Cable Check",
                     message,
                     ResponseCode.FAILED,
                 )
                 return
-            await self.comm_session.evse_controller.start_cable_check()
+
             self.cable_check_req_was_received = True
         self.comm_session.evse_controller.ev_data_context.soc = (
             cable_check_req.dc_ev_status.ev_ress_soc
         )
 
-        dc_charger_state = await self.comm_session.evse_controller.get_dc_evse_status()
+        isolation_level = (
+            await self.comm_session.evse_controller.get_cable_check_status()
+        )  # noqa
 
         evse_processing = EVSEProcessing.ONGOING
         next_state = None
-        if dc_charger_state.evse_isolation_status in [
+        if isolation_level in [
             IsolationLevel.VALID,
             IsolationLevel.WARNING,
         ]:
-            if dc_charger_state.evse_isolation_status == IsolationLevel.WARNING:
+            if isolation_level == IsolationLevel.WARNING:
                 logger.warning(
                     "Isolation resistance measured by EVSE is in Warning-Range"
                 )
             evse_processing = EVSEProcessing.FINISHED
             next_state = PreCharge
-        elif dc_charger_state.evse_isolation_status in [
+        elif isolation_level in [
             IsolationLevel.FAULT,
             IsolationLevel.NO_IMD,
         ]:
             self.stop_state_machine(
-                f"Isolation Failure: {dc_charger_state.evse_isolation_status}",
+                f"Isolation Failure: {isolation_level}",
                 message,
                 ResponseCode.FAILED,
             )
@@ -1902,7 +2105,7 @@ class CableCheck(StateSECC):
 
         cable_check_res = CableCheckRes(
             response_code=ResponseCode.OK,
-            dc_evse_status=dc_charger_state,
+            dc_evse_status=await self.comm_session.evse_controller.get_dc_evse_status(),
             evse_processing=evse_processing,
         )
 
@@ -1926,7 +2129,7 @@ class PreCharge(StateSECC):
 
     def __init__(self, comm_session: SECCCommunicationSession):
         super().__init__(comm_session, Timeouts.V2G_SECC_SEQUENCE_TIMEOUT)
-        self.precharge_req_was_reveived = False
+        self.expecting_precharge_req = True
 
     async def process_message(
         self,
@@ -1942,7 +2145,7 @@ class PreCharge(StateSECC):
         msg = self.check_msg_v2(
             message,
             [PreChargeReq, PowerDeliveryReq],
-            not self.precharge_req_was_reveived,
+            self.expecting_precharge_req,
         )
         if not msg:
             return
@@ -1970,7 +2173,9 @@ class PreCharge(StateSECC):
         # for the PreCharge phase, the requested current must be < 2 A
         # (maximum inrush current according to CC.5.2 in IEC61851 -23)
         present_current = (
-            await self.comm_session.evse_controller.get_evse_present_current()
+            await self.comm_session.evse_controller.get_evse_present_current(
+                Protocol.ISO_15118_2
+            )
         )
         present_current_in_a = present_current.value * 10**present_current.multiplier
         target_current = precharge_req.ev_target_current
@@ -1984,15 +2189,18 @@ class PreCharge(StateSECC):
             )
             return
 
-        if not self.precharge_req_was_reveived:
-            await self.comm_session.evse_controller.set_precharge(
-                precharge_req.ev_target_voltage, precharge_req.ev_target_current
-            )
-            self.precharge_req_was_reveived = True
+        # Set precharge voltage in every loop.
+        # Because there are EVs that send a wrong Precharge-Voltage
+        # in the first message (example: BMW i3 Rex 2018)
+        await self.comm_session.evse_controller.set_precharge(
+            precharge_req.ev_target_voltage, precharge_req.ev_target_current
+        )
 
         dc_charger_state = await self.comm_session.evse_controller.get_dc_evse_status()
         evse_present_voltage = (
-            await self.comm_session.evse_controller.get_evse_present_voltage()
+            await self.comm_session.evse_controller.get_evse_present_voltage(
+                Protocol.ISO_15118_2
+            )
         )
 
         precharge_res = PreChargeRes(
@@ -2008,6 +2216,8 @@ class PreCharge(StateSECC):
             Timeouts.V2G_SECC_SEQUENCE_TIMEOUT,
             Namespace.ISO_V2_MSG_DEF,
         )
+
+        self.expecting_precharge_req = False
 
 
 class CurrentDemand(StateSECC):
@@ -2058,8 +2268,12 @@ class CurrentDemand(StateSECC):
         current_demand_res = CurrentDemandRes(
             response_code=ResponseCode.OK,
             dc_evse_status=await evse_controller.get_dc_evse_status(),
-            evse_present_voltage=await evse_controller.get_evse_present_voltage(),
-            evse_present_current=await evse_controller.get_evse_present_current(),
+            evse_present_voltage=await evse_controller.get_evse_present_voltage(
+                Protocol.ISO_15118_2
+            ),
+            evse_present_current=await evse_controller.get_evse_present_current(
+                Protocol.ISO_15118_2
+            ),
             evse_current_limit_achieved=(
                 await evse_controller.is_evse_current_limit_achieved()
             ),
@@ -2152,7 +2366,9 @@ class WeldingDetection(StateSECC):
             response_code=ResponseCode.OK,
             dc_evse_status=await self.comm_session.evse_controller.get_dc_evse_status(),
             evse_present_voltage=(
-                await self.comm_session.evse_controller.get_evse_present_voltage()
+                await self.comm_session.evse_controller.get_evse_present_voltage(
+                    Protocol.ISO_15118_2
+                )
             ),
         )
 

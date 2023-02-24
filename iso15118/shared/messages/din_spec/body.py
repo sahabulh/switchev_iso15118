@@ -4,22 +4,23 @@ from typing import Optional, Tuple, Type
 
 from pydantic import Field, root_validator, validator
 
+from iso15118.shared.exceptions import V2GMessageValidationError
 from iso15118.shared.messages import BaseModel
 from iso15118.shared.messages.datatypes import (
     DCEVSEChargeParameter,
     DCEVSEStatus,
-    PVEVMaxCurrentLimit,
-    PVEVMaxPowerLimit,
-    PVEVMaxVoltageLimit,
-    PVEVSEMaxCurrentLimit,
-    PVEVSEMaxPowerLimit,
-    PVEVSEMaxVoltageLimit,
-    PVEVSEPresentCurrent,
-    PVEVSEPresentVoltage,
-    PVEVTargetCurrent,
-    PVEVTargetVoltage,
-    PVRemainingTimeToBulkSOC,
-    PVRemainingTimeToFullSOC,
+    PVEVMaxCurrentLimitDin,
+    PVEVMaxPowerLimitDin,
+    PVEVMaxVoltageLimitDin,
+    PVEVSEMaxCurrentLimitDin,
+    PVEVSEMaxPowerLimitDin,
+    PVEVSEMaxVoltageLimitDin,
+    PVEVSEPresentCurrentDin,
+    PVEVSEPresentVoltageDin,
+    PVEVTargetCurrentDin,
+    PVEVTargetVoltageDin,
+    PVRemainingTimeToBulkSOCDin,
+    PVRemainingTimeToFullSOCDin,
     SelectedServiceList,
 )
 from iso15118.shared.messages.din_spec.datatypes import (
@@ -72,8 +73,9 @@ class SessionSetupReq(BodyBase):
     """See section 9.4.1.2.2 in DIN SPEC 70121"""
 
     """Refer Table 29 under section 9.4.1.2.2"""
-    # XSD type hexBinary with max 6 bytes
-    evcc_id: str = Field(..., max_length=12, alias="EVCCID")
+    # XSD type hexBinary with max 8 bytes
+    # (Spec is quite unclear here, but data from field show that 8bytes are used)
+    evcc_id: str = Field(..., max_length=16, alias="EVCCID")
 
     @validator("evcc_id")
     def check_sessionid_is_hexbinary(cls, value):
@@ -234,11 +236,6 @@ class ChargeParameterDiscoveryReq(BodyBase):
 
         Pydantic validators are "class methods",
         see https://pydantic-docs.helpmanual.io/usage/validators/
-        TODO We need to actually send FAILED_WrongChargeParameter or
-             FAILED_WrongEnergyTransferMode if the wrong parameter set is
-             provided, one or multiple parameters can not be interpreted
-             (see [V2G2-477]). Need to check how to not just bury
-             that information in a pydantic validation error.
         """
         # pylint: disable=no-self-argument
         # pylint: disable=no-self-use
@@ -249,15 +246,20 @@ class ChargeParameterDiscoveryReq(BodyBase):
             values.get("dc_ev_charge_parameter"),
         )
         if requested_energy_mode not in ("DC_extended", "DC_core"):
-            raise ValueError(
-                f"Wrong energy transfer mode transfer mode {requested_energy_mode}"
+            raise V2GMessageValidationError(
+                f"[V2G2-476] Wrong energy transfer mode transfer mode "
+                f"{requested_energy_mode}",
+                ResponseCode.FAILED_WRONG_ENERGY_TRANSFER_MODE,
+                cls,
             )
         if ("AC_" in requested_energy_mode and dc_params) or (
             "DC_" in requested_energy_mode and ac_params
         ):
-            raise ValueError(
-                "Wrong charge parameters for requested energy "
-                f"transfer mode {requested_energy_mode}"
+            raise V2GMessageValidationError(
+                "[V2G2-477] Wrong charge parameters for requested energy "
+                f"transfer mode {requested_energy_mode}",
+                ResponseCode.FAILED_WRONG_CHARGE_PARAMETER,
+                cls,
             )
         return values
 
@@ -386,56 +388,62 @@ class PreChargeReq(BodyBase):
     """
 
     dc_ev_status: DCEVStatus = Field(..., alias="DC_EVStatus")
-    ev_target_voltage: PVEVTargetVoltage = Field(..., alias="EVTargetVoltage")
-    ev_target_current: PVEVTargetCurrent = Field(..., alias="EVTargetCurrent")
+    ev_target_voltage: PVEVTargetVoltageDin = Field(..., alias="EVTargetVoltage")
+    ev_target_current: PVEVTargetCurrentDin = Field(..., alias="EVTargetCurrent")
 
 
 class PreChargeRes(Response):
     """See section 9.4.2.3.3 in DIN SPEC 70121"""
 
     dc_evse_status: DCEVSEStatus = Field(..., alias="DC_EVSEStatus")
-    evse_present_voltage: PVEVSEPresentVoltage = Field(..., alias="EVSEPresentVoltage")
+    evse_present_voltage: PVEVSEPresentVoltageDin = Field(
+        ..., alias="EVSEPresentVoltage"
+    )
 
 
 class CurrentDemandReq(BodyBase):
     """See section 9.4.2.4.2 in DIN SPEC 70121"""
 
     dc_ev_status: DCEVStatus = Field(..., alias="DC_EVStatus")
-    ev_target_current: PVEVTargetCurrent = Field(..., alias="EVTargetCurrent")
-    ev_max_voltage_limit: PVEVMaxVoltageLimit = Field(
+    ev_target_current: PVEVTargetCurrentDin = Field(..., alias="EVTargetCurrent")
+    ev_max_voltage_limit: PVEVMaxVoltageLimitDin = Field(
         None, alias="EVMaximumVoltageLimit"
     )
-    ev_max_current_limit: PVEVMaxCurrentLimit = Field(
+    ev_max_current_limit: PVEVMaxCurrentLimitDin = Field(
         None, alias="EVMaximumCurrentLimit"
     )
-    ev_max_power_limit: PVEVMaxPowerLimit = Field(None, alias="EVMaximumPowerLimit")
+    ev_max_power_limit: PVEVMaxPowerLimitDin = Field(None, alias="EVMaximumPowerLimit")
     bulk_charging_complete: bool = Field(None, alias="BulkChargingComplete")
     charging_complete: bool = Field(..., alias="ChargingComplete")
-    remaining_time_to_full_soc: PVRemainingTimeToFullSOC = Field(
+    remaining_time_to_full_soc: PVRemainingTimeToFullSOCDin = Field(
         None, alias="RemainingTimeToFullSoC"
     )
-    remaining_time_to_bulk_soc: PVRemainingTimeToBulkSOC = Field(
+    remaining_time_to_bulk_soc: PVRemainingTimeToBulkSOCDin = Field(
         None, alias="RemainingTimeToBulkSoC"
     )
-    ev_target_voltage: PVEVTargetVoltage = Field(..., alias="EVTargetVoltage")
+    ev_target_voltage: PVEVTargetVoltageDin = Field(..., alias="EVTargetVoltage")
 
 
 class CurrentDemandRes(Response):
     """See section 9.4.2.4.3 in DIN SPEC 70121"""
 
     dc_evse_status: DCEVSEStatus = Field(..., alias="DC_EVSEStatus")
-    evse_present_voltage: PVEVSEPresentVoltage = Field(..., alias="EVSEPresentVoltage")
-    evse_present_current: PVEVSEPresentCurrent = Field(..., alias="EVSEPresentCurrent")
+    evse_present_voltage: PVEVSEPresentVoltageDin = Field(
+        ..., alias="EVSEPresentVoltage"
+    )
+    evse_present_current: PVEVSEPresentCurrentDin = Field(
+        ..., alias="EVSEPresentCurrent"
+    )
     evse_current_limit_achieved: bool = Field(..., alias="EVSECurrentLimitAchieved")
     evse_voltage_limit_achieved: bool = Field(..., alias="EVSEVoltageLimitAchieved")
     evse_power_limit_achieved: bool = Field(..., alias="EVSEPowerLimitAchieved")
-    evse_max_voltage_limit: PVEVSEMaxVoltageLimit = Field(
+    evse_max_voltage_limit: PVEVSEMaxVoltageLimitDin = Field(
         None, alias="EVSEMaximumVoltageLimit"
     )
-    evse_max_current_limit: PVEVSEMaxCurrentLimit = Field(
+    evse_max_current_limit: PVEVSEMaxCurrentLimitDin = Field(
         None, alias="EVSEMaximumCurrentLimit"
     )
-    evse_max_power_limit: PVEVSEMaxPowerLimit = Field(
+    evse_max_power_limit: PVEVSEMaxPowerLimitDin = Field(
         None, alias="EVSEMaximumPowerLimit"
     )
 
@@ -450,7 +458,9 @@ class WeldingDetectionRes(Response):
     """See section 9.4.2.5.3 in DIN SPEC 70121"""
 
     dc_evse_status: DCEVSEStatus = Field(..., alias="DC_EVSEStatus")
-    evse_present_voltage: PVEVSEPresentVoltage = Field(..., alias="EVSEPresentVoltage")
+    evse_present_voltage: PVEVSEPresentVoltageDin = Field(
+        ..., alias="EVSEPresentVoltage"
+    )
 
 
 class SessionStopReq(BodyBase):
