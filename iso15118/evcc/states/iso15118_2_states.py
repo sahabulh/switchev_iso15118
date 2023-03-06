@@ -1417,6 +1417,7 @@ class CurrentDemand(StateEVCC):
 
     async def stop_charging(self):
         ev_controller = self.comm_session.ev_controller
+        await ev_controller.stop_charging()
         power_delivery_req = PowerDeliveryReq(
             charge_progress=ChargeProgress.STOP,
             sa_schedule_tuple_id=self.comm_session.selected_schedule,

@@ -441,3 +441,9 @@ class CpState(str, Enum):
 class SessionStopAction(str, Enum):
     TERMINATE = "terminate"
     PAUSE = "pause"
+    
+class SessionStopMode(str, Enum):
+    RELATIVE_TIME = "relativeTime"
+    ABSOLUTE_TIME = "absoluteTime"
+    CHARGE_CYCLE = "chargeCycle"
+    STATE_OF_CHARGE = "stateOfCharge"

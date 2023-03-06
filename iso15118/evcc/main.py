@@ -3,7 +3,7 @@ import logging
 import sys
 
 from iso15118.evcc import Config, EVCCHandler
-from iso15118.evcc.controller.simulator import SimEVController
+from iso15118.evcc.controller.simulator import load_charge_mode
 from iso15118.evcc.evcc_config import load_from_file
 from iso15118.shared.exificient_exi_codec import ExificientEXICodec
 
@@ -22,13 +22,14 @@ async def main():
         if ev_config_file_path:
             config.ev_config_file_path = ev_config_file_path
     evcc_config = await load_from_file(config.ev_config_file_path)
+    ev_controller = await load_charge_mode(evcc_config)
+    
     await EVCCHandler(
         evcc_config=evcc_config,
         iface=config.iface,
         exi_codec=ExificientEXICodec(),
-        ev_controller=SimEVController(evcc_config),
+        ev_controller=ev_controller,
     ).start()
-
 
 def run():
     try:
