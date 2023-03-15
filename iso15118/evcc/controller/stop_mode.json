@@ -1,5 +1,5 @@
 {
-    "stopMode": "relativeTime",
+    "stopMode": "chargeCycle",
     "targetChargeCycle": 10,
     "duration": 10,
     "endTime": "Mar 2 2023 4:56PM",
