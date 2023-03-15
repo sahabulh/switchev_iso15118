@@ -35,6 +35,9 @@ class EVCCConfig(BaseModel):
     # Indicates the security level (either TCP (unencrypted) or TLS (encrypted))
     # the EVCC shall send in the SDP request
     use_tls: Optional[bool] = Field(True, alias="useTls")
+    # Config variable for specifying PKI tier
+    # Use 3 for PKI with 2 SubCAa, use 2 for PKI with 1 SubCA
+    pki_tier_mo: Optional[int] = Field(3, alias="pkiTierMo")
     # How often shall SDP (SECC Discovery Protocol) retries happen before reverting
     # to using nominal duty cycle PWM-based charging?
     sdp_retry_cycles: Optional[int] = Field(1, alias="sdpRetryCycles")

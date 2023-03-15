@@ -1,0 +1,315 @@
+# EV PKI
+
+## API URLs
+
+* https://one.digicert.com/iot/api-docs/index.html
+
+## Test Procecures
+
+1. Generate certificate CRL and request certificate from API.
+
+```
+openssl ecparam -genkey -name secp521r1 | openssl ec -out ocsp-test.key
+openssl req -new -key ocsp-test.key -config configs/ocsp-test.cnf -out ocsp-test.csr -subj "/C=US/O=Sandia/OU=EV Department/CN=EV001"
+
+export EONTI_API_KEY="014f43b1b6a27650c00298f226_696e1e0a8be2a219d251e0661ad2e8f4e87d42fc42ab4bab5a1acefb283af355"
+curl -XPOST -H "x-api-key: ${EONTI_API_KEY}" -H "Content-Type: application/json" https://demo.one.digicert.com/iot/api/v1/certificate -d '
+{
+  "csr": "<grab from ocsp-test.csr generated above>",
+  "enrollment_profile_id": "IOT_f2286f88-4cfa-4d99-be24-998dd1a10e60"
+}
+' | jq . > ocsp-test-response.json
+
+cat ocsp-test-response.json | jq -r .pem | openssl x509 -text -noout -in /dev/stdin
+```
+
+Note that the first certificate in the response json is the generated certificate.
+
+2. Query OCSP Responder to confirm certificate isn't revoked.
+
+```
+curl http://crl.demo.one.digicert.com/P-256TESTTier1CPOSub-CA.crl > eonti.crl
+openssl crl -inform DER -text -noout -in eonti.crl
+```
+
+```
+openssl ocsp -issuer sub-ca.crt -cert ocsp-test.crt -text -reqout ocsp-test.req
+curl -d @ocsp-test.req -H "Content-Type: application/ocsp-request" --url http://ocsp.demo.one.digicert.com
+```
+
+> The above doesn't work. Do the following instead.
+
+```
+openssl ocsp -url http://ocsp.demo.one.digicert.com -issuer sub-ca.crt -cert ocsp-test.crt 
+```
+
+3. Revoke certificate via API.
+
+```
+export EONTI_SERIAL_NUMBER="0757814561E5C368E2592F88B265C4332D66362C" # change this to be actual serial number from certificate generated above
+curl --verbose -XPUT -H "x-api-key: ${EONTI_API_KEY}" -H "Content-Type: application/json" \
+  https://demo.one.digicert.com/iot/api/v1/certificate/serial-number/${EONTI_SERIAL_NUMBER}/revoke \
+  -d '{"reason": "key_compromise", "revocation_date": "2023-02-08T17:11:25Z"}'
+```
+
+4. Query OCSP Responder to confirm certificate is now revoked.
+
+> The CRL only updates once every 24 hours...
+
+```
+curl http://crl.demo.one.digicert.com/P-256TESTTier1CPOSub-CA.crl > eonti.crl
+openssl crl -inform DER -text -noout -in eonti.crl
+
+Certificate Revocation List (CRL):
+        Version 2 (0x1)
+        Signature Algorithm: ecdsa-with-SHA256
+        Issuer: C = US, O = EV Charging PKI, DC = EVCPKI, OU = TEST CPO Sub-CA, CN = P-256 TEST Tier 1 CPO Sub-CA
+        Last Update: Jan 10 10:14:41 2023 GMT
+        Next Update: Jan 11 10:14:41 2023 GMT
+        CRL extensions:
+            X509v3 Authority Key Identifier: 
+                32:29:20:0D:6C:1E:D4:58:22:AB:A2:1B:A4:54:87:F1:5D:A7:67:9D
+            X509v3 CRL Number: 
+                528
+Revoked Certificates:
+    Serial Number: 0757814561E5C368E2592F88B265C4332D66362C
+        Revocation Date: Jan  6 17:11:25 2023 GMT
+        CRL entry extensions:
+            X509v3 CRL Reason Code: 
+                Key Compromise
+    Serial Number: 6B87B68F4702F70F72717C49E86B34092B669D2C
+        Revocation Date: Oct 18 14:25:23 2022 GMT
+    Signature Algorithm: ecdsa-with-SHA256
+    Signature Value:
+        30:45:02:21:00:cd:fc:0e:4e:b4:5a:2f:8a:63:28:7b:3e:97:
+        45:a1:0b:a3:85:fa:1c:64:9a:1c:5b:56:14:91:31:cd:95:91:
+        9a:02:20:0c:36:1e:50:3b:37:84:4e:39:dc:06:b8:5b:f1:bf:
+        d8:c8:64:f0:56:c5:1b:32:00:34:e9:36:e8:1b:21:1e:36
+```
+
+```
+openssl ocsp -url http://ocsp.demo.one.digicert.com -issuer sub-ca.crt -cert ocsp-test.crt 
+
+WARNING: no nonce in response
+Response verify OK
+ocsp-test.crt: revoked
+        This Update: Jan 10 20:23:08 2023 GMT
+        Next Update: Jan 17 20:23:08 2023 GMT
+        Reason: keyCompromise
+        Revocation Time: Jan  6 17:11:25 2023 GMT
+```
+
+## Eonti API
+
+```
+export EONTI_API_KEY="014f43b1b6a27650c00298f226_696e1e0a8be2a219d251e0661ad2e8f4e87d42fc42ab4bab5a1acefb283af355"
+curl -XGET -H "x-api-key: ${EONTI_API_KEY}" https://demo.one.digicert.com/iot/api/v1/certificate
+```
+
+## Example from Francis (Eonti)
+
+Request:
+
+```
+{
+  "csr": "
+    -----BEGIN CERTIFICATE REQUEST-----
+    MIIBzjCCATACAQAwXDELMAkGA1UEBhMCVVMxDjAMBgNVBAoTBUVvbnRpMRMwEQYK
+    CZImiZPyLGQBGRYDQ1BPMRIwEAYDVQQLEwlUZXN0IENlcnQxFDASBgNVBAMTC0Vv
+    bnRpLUNQSUQxMIGbMBAGByqGSM49AgEGBSuBBAAjA4GGAAQAelnc7/P22/dRN7xm
+    q2tNsarJ5dVB9gufZUcK65qcNkqKywhvxHBM0c6a06i5SZpMjDxJNJTmlDp2A4A/
+    OlTxVTAAL5y2qBu9dDYgntAwU8f82hIWIXX/PbELDRlKlX0r849YjgB9MQUaP36Y
+    DDqnHdd6NwuHE5ikqWyCeJgbYl9B/P+gLzAtBgkqhkiG9w0BCQ4xIDAeMAwGA1Ud
+    EwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOIMAoGCCqGSM49BAMEA4GLADCBhwJCAZBq
+    c9SoRwnoj5QKo2gEW/Cg/WIzEL2KsFRSQtFHVnJWwtc9g29ARY2y19DFpX/vsrJq
+    9As7bjRfHCV4caJvhblDAkEG4LKebMnjp2N9i4dFvOtAcDSeVFeRLr9ZoZRU4/M5
+    B4fZiiQbftYqZNTcLpaf8r5H2PMFcfZE3Y6gUkXSeOud0g==
+    -----END CERTIFICATE REQUEST-----
+  ",
+  "enrollment_profile_id": "IOT_f2286f88-4cfa-4d99-be24-998dd1a10e60",
+  "certificate_profile_attributes": [
+    {
+      "id": "subject.common_name",
+      "value": "EVSE_ID1"
+    },
+    {
+      "id": "subject.organization_name",
+      "value": "Sandia National Laboratories"
+    },
+    {
+      "id": "subject.organization_unit",
+      "value": "Sandia National Laboratories OU"
+    },
+    {
+      "id": "subject.country",
+      "value": "US"
+    }
+  ]
+}
+```
+
+```
+openssl req -noout -text -in /dev/stdin
+```
+
+```
+Certificate Request:
+    Data:
+        Version: 1 (0x0)
+        Subject: C = US, O = Eonti, DC = CPO, OU = Test Cert, CN = Eonti-CPID1
+        Subject Public Key Info:
+            Public Key Algorithm: id-ecPublicKey
+                Public-Key: (521 bit)
+                pub:
+                    04:00:7a:59:dc:ef:f3:f6:db:f7:51:37:bc:66:ab:
+                    6b:4d:b1:aa:c9:e5:d5:41:f6:0b:9f:65:47:0a:eb:
+                    9a:9c:36:4a:8a:cb:08:6f:c4:70:4c:d1:ce:9a:d3:
+                    a8:b9:49:9a:4c:8c:3c:49:34:94:e6:94:3a:76:03:
+                    80:3f:3a:54:f1:55:30:00:2f:9c:b6:a8:1b:bd:74:
+                    36:20:9e:d0:30:53:c7:fc:da:12:16:21:75:ff:3d:
+                    b1:0b:0d:19:4a:95:7d:2b:f3:8f:58:8e:00:7d:31:
+                    05:1a:3f:7e:98:0c:3a:a7:1d:d7:7a:37:0b:87:13:
+                    98:a4:a9:6c:82:78:98:1b:62:5f:41:fc:ff
+                ASN1 OID: secp521r1
+                NIST CURVE: P-521
+        Attributes:
+            Requested Extensions:
+                X509v3 Basic Constraints: critical
+                    CA:FALSE
+                X509v3 Key Usage: critical
+                    Digital Signature, Key Agreement
+    Signature Algorithm: ecdsa-with-SHA512
+    Signature Value:
+        30:81:87:02:42:01:90:6a:73:d4:a8:47:09:e8:8f:94:0a:a3:
+        68:04:5b:f0:a0:fd:62:33:10:bd:8a:b0:54:52:42:d1:47:56:
+        72:56:c2:d7:3d:83:6f:40:45:8d:b2:d7:d0:c5:a5:7f:ef:b2:
+        b2:6a:f4:0b:3b:6e:34:5f:1c:25:78:71:a2:6f:85:b9:43:02:
+        41:06:e0:b2:9e:6c:c9:e3:a7:63:7d:8b:87:45:bc:eb:40:70:
+        34:9e:54:57:91:2e:bf:59:a1:94:54:e3:f3:39:07:87:d9:8a:
+        24:1b:7e:d6:2a:64:d4:dc:2e:96:9f:f2:be:47:d8:f3:05:71:
+        f6:44:dd:8e:a0:52:45:d2:78:eb:9d:d2
+```
+
+Response:
+
+```
+{
+  "certificate_request_id": "4a5eb2a9-2243-420f-9b80-abf6c57835dd",
+  "status": "AUTO_APPROVED",
+  "result": "SUCCESS",
+  "certificate_id": "14b15f20-b033-47b3-bc3e-bccfdbfdab2f",
+  "pem": "
+    -----BEGIN CERTIFICATE-----
+    MIIF4TCCBEmgAwIBAgIUapEHNmY6G0Q172krzTAhbwQZvJQwDQYJKoZIhvcNAQEM
+    BQAwUDELMAkGA1UEBhMCVVMxDjAMBgNVBAoTBUVvbnRpMRcwFQYDVQQLEw5URVNU
+    IElDQTItMDAwMTEYMBYGA1UEAxMPVEVMVVMgVEVTVCBJQ0EyMB4XDTIxMDUwNDA0
+    MTcwNFoXDTIyMDUwNDA0MTcwNFowgYcxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpD
+    YWxpZm9ybmlhMREwDwYDVQQHEwhTYW4gSm9zZTEVMBMGA1UEChMMTEggT3JnTmFt
+    ZTAxMRMwEQYDVQQLEwpMSCBPcmdVbml0MSQwIgYDVQQDExtwc2FwMy5hcGlkZW1v
+    Lm5nOTExdGVzdC5jb20wggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIBgQC9
+    5sW1Wv3DZibgeW4t6xP1eNydMbEGqiwlMzBPZwWOw6zOnrtiXja/0tfzqy9iGbXF
+    NV5okWqxcfQfsfR1soJJsMIGpHlRfBBRVg2X7SLnhrrBk3++H0aKZSZ4x0eF+dXG
+    BQ9OOypYq4+BQlj3AA2HPyqPu+rWWUjj2c/ZAHKjGdvh5NscTYYMv4ONaDEDpeK+
+    gDLlheYXlb+IM+UkFyN1ceAot+YqJ3jVYzndMNNst3e2utfVq044NJo07BTs00qn
+    BVhB0sA74Uw8gvSdI6aLJCr3DxJk7BZa98tsbTFe4WujAd6egHrYB7cw4F60dGQ4
+    nrh/IBPigJ2bZhhMQNYcI9DWE2wkjN1M7ZGU0wKMSykggqpJp0kPI0LejqLl6S6/
+    yoUjlFgVFbCHpnQxR/lyLA186yq2XbDdbxOfD1M/c4wQz4vr6aprLe+825/xnxgh
+    HhF9ijFysocE6TXexpHNBIpzCweGzDweYPuv4ShaAwkUc0bEfk0mz/z2f5pnEvcC
+    AwEAAaOCAXkwggF1MAwGA1UdEwEB/wQCMAAwHQYDVR0OBBYEFKudCYJPuhdGFXrr
+    O8HV3eOMueJwMB8GA1UdIwQYMBaAFN7plO+/gAcLab6kSBsbNes7HosvMA4GA1Ud
+    DwEB/wQEAwIF4DAgBgNVHSUBAf8EFjAUBggrBgEFBQcDAgYIKwYBBQUHAwEwVgYD
+    VR0RBE8wTaBLBgorBgEEAYOydgEBoD2gOww5ZWxlbWVudElkL3BzYXAzLmFwaWRl
+    bW8ubmc5MTF0ZXN0LmNvbS9hcGlkZW1vL2V4YW1wbGUuY29tMD0GCCsGAQUFBwEB
+    BDEwLzAtBggrBgEFBQcwAYYhaHR0cDovL29jc3AuZGVtby5vbmUuZGlnaWNlcnQu
+    Y29tMEMGA1UdHwQ8MDowOKA2oDSGMmh0dHA6Ly9jcmwuZGVtby5vbmUuZGlnaWNl
+    cnQuY29tL1RFTFVTVEVTVElDQTIuY3JsMBcGA1UdIAQQMA4wDAYKKwYBBAGBt1eH
+    DzANBgkqhkiG9w0BAQwFAAOCAYEAYNyXunl1cCnVYMOgXdt3jtrfBkscHo8DQh8m
+    tQ80K+AqSdqqB3WfObOontrvCwE/hU93/btyCegtwSwCTyRgGlVZ17er17U7s6/B
+    3pvNUiW0rKQdUqlH1m6jgRH8w1SoaswXRMSHjLosMP6gvsNLHHeemx7tDekHZKRk
+    MuGTcHNTEPd+WXnLdfLUyj+ESiEW1633LjXXG+y8Q9ie3f74gXjPfIMM609COb2Q
+    mLrionwkrVe2Wd/hnAfIn20avEKbFOyx0ypd6HPlqncLSWrkIe/I360bpQW+9rJh
+    ZaflrENwRoNC2BcFvJ5OLGg6BFKqF3BOXlAjul0SPdvATeigz+sK24eziVQ8IHfa
+    1St+8FEld76iXAoW93u+ArmEwzbugXks25D0L1gGYEwTmoBI9aJDclNODinSodYa
+    SWH7IUHiS4XXZzQvCCogCXO8JCROO6+EQ7oVfseg063yYq76onnSEqH8gJ7v4NFW
+    oPDfZS5ErUnNlSJmDlRpJHMVNvks
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    MIIGCzCCA/OgAwIBAgIUJj3ec1gH80kzs9qeNTgcsuhH8gYwDQYJKoZIhvcNAQEM
+    BQAwWDELMAkGA1UEBhMCVVMxDjAMBgNVBAoTBUVvbnRpMRcwFQYDVQQLEw5URVNU
+    IFJvb3QgQ0EtMTEgMB4GA1UEAxMXVEVMVVMgQ1BDQSBURVNUIFJvb3QgQ0EwHhcN
+    MjEwMzMxMTkwNDA2WhcNMzEwMzI0MTg1NTA0WjBQMQswCQYDVQQGEwJVUzEOMAwG
+    A1UEChMFRW9udGkxFzAVBgNVBAsTDlRFU1QgSUNBMi0wMDAxMRgwFgYDVQQDEw9U
+    RUxVUyBURVNUIElDQTIwggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIBgQCp
+    5TECUfHh1ruYrL4ip4Arbtz4joJa40q4nwZiNkEhvr+TdMkZL+t2wRh+JkAJwt0/
+    OSQMbW9LXW10KTIuBGrHr3MaCqRR6dAdjkyIEyWzt21BJ9GmuKZ13qIR9NJrvr4E
+    rY2ANK5rAqHU2meZHZ5rxcibDs2Yebie5sxZyoaZYIB1iM0Vc7zwvpz+KMdfTYZB
+    QbFdId1hZh0SoPM2irBL7NE+7OpilBA+svZeZeGZFM6ezcLCVKdKJV6qLx8lDTtb
+    2iKOGUEFzHiSlc7ILi/6uN9T7iZoerVHwI8/jiBjgLfKqnJx73TUi8DhVB7xiFV8
+    oPdQTbZ+gdlcO7ZXwxALiK0OKpAgVadFUZOzSbqoSkpi1dbzP686G3Qx+6nZAxwa
+    0HsIsVXjyfIKOmIOr9w7l1vHZ9VchUyKot461Ixfhoa+7qIOM+vyGHaGzDQ5Qo5M
+    x8+PDPKokTfKC7oo+f9O9IObTBesTaA5iZpdnjQi3/DnZ5yJ+B+QZ8qD/nz9+nUC
+    AwEAAaOCAVMwggFPMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFN7plO+/gAcL
+    ab6kSBsbNes7HosvMB8GA1UdIwQYMBaAFE2bX8MoTpx5bbYvnKvnMwZR6Br8MA4G
+    A1UdDwEB/wQEAwIBhjCBhwYIKwYBBQUHAQEEezB5MC0GCCsGAQUFBzABhiFodHRw
+    Oi8vb2NzcC5kZW1vLm9uZS5kaWdpY2VydC5jb20wSAYIKwYBBQUHMAKGPGh0dHA6
+    Ly9jYWNlcnRzLmRlbW8ub25lLmRpZ2ljZXJ0LmNvbS9URUxVU0NQQ0FURVNUUm9v
+    dENBLmNydDBJBgNVHR8EQjBAMD6gPKA6hjhodHRwOi8vY3JsLmRlbW8ub25lLmRp
+    Z2ljZXJ0LmNvbS9URUxVU0NQQ0FURVNUUm9vdENBLmNybDAXBgNVHSAEEDAOMAwG
+    CisGAQQBgbdXhw8wDQYJKoZIhvcNAQEMBQADggIBAMyorEPyUIVndJQyMx+DeR0x
+    OsAyJeuJSfancXKSx4wDTAj0QGW5OBegOYqc3Z7UbAdNihK6aFjDD1VXeh8BbKVQ
+    JbqaDvzrtoK1RoJyRH1KMN7ba9A5rnhM8+ZpdJ52dv6YVzNUqYU5buJcy4BCkBe5
+    8SBATS2AhZfBUDGyclVu1Y2JEGJ0oK5NFwOl57H1RUAqruV7LA83QORuwSTR33SE
+    2YbeyyFycc6yuiUGNYkViRvFMFI50skMrml4gNgWJ2+YiZqEgZYFMwSvr1HM03q5
+    PZ5FBHaiWeDeWdL1e2gpWLh5H6mRRmnY8O3qSraB2clQIIw2e/ys2/muuoC+0gLJ
+    H5lwYXV4//klL/xjQzGGzJLeikMSU/FsT9P1c0r3Gm49GQ5+9Co1fL4d6dnPamLc
+    rJzf7dqpnrawcA01AiB6YzYvHRsIPwINVNfxNltfni2ZC41lDGMfyOREWqrCvsAo
+    EIrmItaEiXzy0Py++P3LBhi9bj3lCwcxXBhwx1iwhzIDuQsDjqlO+7r2/XAGspsh
+    wJijbsuePp/LEQrDAnBWnsSJiRJaCBd1oTd7aiBg9oaNs7OjzCBTcLwUOn5oe3P8
+    mQanPylo0rJLmNGS9WhjezPkgmzbfPj2zCWxfODfe3ihVWaBj2saR3RyxSUCDkW0
+    yHz+/j5xGEmgqgNJDfoX
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    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
+    Nifa2VU/ReJGndxAMcEQOsKw9VA=
+    -----END CERTIFICATE-----
+  "
+}
+```
+
+```
+openssl x509 -noout -text -in /dev/stdin
+```
+
+## Generate New Key and CSR
+
+```
+openssl req -nodes -newkey rsa:2048 -keyout example.key -out example.csr -subj "/C=US/O=Sandia/OU=EV Department/CN=EVSE01"
+```

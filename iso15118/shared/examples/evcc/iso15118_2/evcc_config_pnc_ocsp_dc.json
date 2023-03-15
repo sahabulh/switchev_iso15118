@@ -1,0 +1,13 @@
+{
+	"supportedProtocols": [
+		"ISO_15118_2"
+	],
+	"supportedEnergyServices": [
+		"DC"
+	],
+	"energyTransferMode": "DC_extended",
+	"isCertInstallNeeded": false,
+	"useTls": true,
+	"enforceOcsp": true,
+	"pkiTierMo": 2
+}

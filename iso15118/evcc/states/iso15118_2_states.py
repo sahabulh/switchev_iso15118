@@ -461,13 +461,17 @@ class PaymentServiceSelection(StateEVCC):
                     return
             else:
                 try:
+                    if self.comm_session.config.pki_tier_mo == 3:
+                        sub_ca1_path=CertPath.MO_SUB_CA1_DER
+                    else:
+                        sub_ca1_path=None
                     payment_details_req = PaymentDetailsReq(
                         emaid=eMAID(get_cert_cn(load_cert(CertPath.CONTRACT_LEAF_DER))),
                         cert_chain=load_cert_chain(
                             protocol=Protocol.ISO_15118_2,
                             leaf_path=CertPath.CONTRACT_LEAF_DER,
                             sub_ca2_path=CertPath.MO_SUB_CA2_DER,
-                            sub_ca1_path=CertPath.MO_SUB_CA1_DER,
+                            sub_ca1_path=sub_ca1_path,
                         ),
                     )
                 except FileNotFoundError as exc:
