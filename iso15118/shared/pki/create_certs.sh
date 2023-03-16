@@ -272,10 +272,14 @@ if use_digicert==true;
 then
 	# 9-12) Get pregenerated MO (mobility operator) certificates (MORootCA, MOSubCA2 and ContractLeaf)
 	#    (DigiCert ONE only supports one SubCA) (validity is up to the MO)
-	python3 get_certs.py
-	mv *.pem $CERT_PATH
-	mv *.der $CERT_PATH
-	cp key_vault/$ISO_FOLDER/contractLeaf.key $KEY_PATH
+	if [ $version == $ISO_2 ];
+	then
+		python3 get_certs_2.py
+		cp key_vault/$ISO_FOLDER/USEMAC00000001.key $KEY_PATH/contractLeaf.key
+	else
+		python3 get_certs_20.py
+		cp key_vault/$ISO_FOLDER/USEMAC00000002.key $KEY_PATH/contractLeaf.key
+	fi
 else
 	# 9) Create a self-signed MORootCA (mobility operator) certificate
 	#    (validity is up to the MO)

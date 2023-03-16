@@ -1,12 +1,9 @@
 import requests
-import json
-import subprocess
 
 from gen_ids import get_EMAID
 
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography import x509
-from cryptography.x509.oid import NameOID
 
 emaid = get_EMAID()
 headers = {'accept': 'application/json', 'X-API-KEY': '014f43b1b6a27650c00298f226_696e1e0a8be2a219d251e0661ad2e8f4e87d42fc42ab4bab5a1acefb283af355', 'Content-Type': 'application/json'}
@@ -25,6 +22,7 @@ def get_certChain(serial):
         raise Exception(f"Certificate with serial {serial} couldn't be found.")
         
 def save_certs(certs, encoding = 'all'):
+    folder = "iso15118_2/certs/"
     num_certs = len(certs)
     for i in range(num_certs):
         if i == 0:
@@ -38,10 +36,10 @@ def save_certs(certs, encoding = 'all'):
         else:
             raise Exception(f"Chain contains {num_certs} certificates. Should contain 3 or 4.")
         if encoding == 'all' or encoding == 'pem':
-            with open(name+".pem", "wb") as outfile:
+            with open(folder+name+".pem", "wb") as outfile:
                 outfile.write(certs[i].public_bytes(serialization.Encoding.PEM))
         if encoding == 'all' or encoding == 'der':
-            with open(name+".der", "wb") as outfile:
+            with open(folder+name+".der", "wb") as outfile:
                 outfile.write(certs[i].public_bytes(serialization.Encoding.DER))
         
 def download_certs(serial, encoding = 'all'):
