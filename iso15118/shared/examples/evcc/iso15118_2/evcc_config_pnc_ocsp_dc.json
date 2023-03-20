@@ -1,6 +1,6 @@
 {
 	"supportedProtocols": [
-		"ISO_15118_20_DC"
+		"ISO_15118_2"
 	],
 	"supportedEnergyServices": [
 		"DC"

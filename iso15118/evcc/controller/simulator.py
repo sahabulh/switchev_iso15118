@@ -39,6 +39,7 @@ from iso15118.shared.messages.din_spec.datatypes import (
     SAScheduleTupleEntry as SAScheduleTupleEntryDINSPEC,
 )
 from iso15118.shared.messages.enums import (
+    ControlMode,
     DCEVErrorCode,
     EnergyTransferModeEnum,
     Namespace,
@@ -122,7 +123,7 @@ class SimEVController(EVControllerInterface):
         self.precharge_loop_cycles: int = 0
         self._charging_is_completed = False
         self._soc = 10
-        self.charge_mode: SessionStopMode = SessionStopMode.CHARGE_CYCLE
+        self.stop_mode: SessionStopMode = SessionStopMode.CHARGE_CYCLE
         self.target_charge_cycle: int = 10
         self.start_time: datetime.datetime = datetime.now()
         self.duration: int = 10
@@ -187,18 +188,13 @@ class SimEVController(EVControllerInterface):
         self, services: List[MatchedService]
     ) -> SelectedEnergyService:
         """Overrides EVControllerInterface.select_energy_service_v20()."""
-        matched_energy_services = [
-            service for service in services if service.is_energy_service
-        ]
-        if matched_energy_services:
-            top_of_list: MatchedService = services[0]
-            selected_service = SelectedEnergyService(
-                service=top_of_list.service,
-                is_free=top_of_list.is_free,
-                parameter_set=top_of_list.parameter_sets[0],
-            )
-            return selected_service
-        return None
+        top_of_list: MatchedService = services[0]
+        selected_service = SelectedEnergyService(
+            service=top_of_list.service,
+            is_free=top_of_list.is_free,
+            parameter_set=top_of_list.parameter_sets[0],
+        )
+        return selected_service
 
     async def select_vas_services_v20(
         self, services: List[MatchedService]
@@ -271,35 +267,31 @@ class SimEVController(EVControllerInterface):
         BPTDCChargeParameterDiscoveryReqParams,
     ]:
         """Overrides EVControllerInterface.get_charge_params_v20()."""
+        ac_cpd_params = ACChargeParameterDiscoveryReqParams(
+            ev_max_charge_power=RationalNumber(exponent=3, value=11),
+            ev_min_charge_power=RationalNumber(exponent=0, value=100),
+        )
+        dc_cpd_params = DCChargeParameterDiscoveryReqParams(
+            ev_max_charge_power=RationalNumber(exponent=3, value=300),
+            ev_min_charge_power=RationalNumber(exponent=0, value=100),
+            ev_max_charge_current=RationalNumber(exponent=0, value=300),
+            ev_min_charge_current=RationalNumber(exponent=0, value=10),
+            ev_max_voltage=RationalNumber(exponent=0, value=1000),
+            ev_min_voltage=RationalNumber(exponent=0, value=10),
+        )
         if selected_service.service == ServiceV20.AC:
-            return ACChargeParameterDiscoveryReqParams(
-                ev_max_charge_power=RationalNumber(exponent=3, value=11),
-                ev_min_charge_power=RationalNumber(exponent=0, value=100),
-            )
+            return ac_cpd_params
         elif selected_service.service == ServiceV20.AC_BPT:
             return BPTACChargeParameterDiscoveryReqParams(
-                ev_max_charge_power=RationalNumber(exponent=3, value=11),
-                ev_min_charge_power=RationalNumber(exponent=0, value=100),
+                **(ac_cpd_params.dict()),
                 ev_max_discharge_power=RationalNumber(exponent=3, value=11),
                 ev_min_discharge_power=RationalNumber(exponent=0, value=100),
             )
         elif selected_service.service == ServiceV20.DC:
-            return DCChargeParameterDiscoveryReqParams(
-                ev_max_charge_power=RationalNumber(exponent=3, value=300),
-                ev_min_charge_power=RationalNumber(exponent=0, value=100),
-                ev_max_charge_current=RationalNumber(exponent=0, value=300),
-                ev_min_charge_current=RationalNumber(exponent=0, value=10),
-                ev_max_voltage=RationalNumber(exponent=0, value=1000),
-                ev_min_voltage=RationalNumber(exponent=0, value=10),
-            )
+            return dc_cpd_params
         elif selected_service.service == ServiceV20.DC_BPT:
             return BPTDCChargeParameterDiscoveryReqParams(
-                ev_max_charge_power=RationalNumber(exponent=3, value=300),
-                ev_min_charge_power=RationalNumber(exponent=0, value=100),
-                ev_max_charge_current=RationalNumber(exponent=0, value=300),
-                ev_min_charge_current=RationalNumber(exponent=0, value=10),
-                ev_max_voltage=RationalNumber(exponent=0, value=1000),
-                ev_min_voltage=RationalNumber(exponent=0, value=10),
+                **(dc_cpd_params.dict()),
                 ev_max_discharge_power=RationalNumber(exponent=3, value=11),
                 ev_min_discharge_power=RationalNumber(exponent=3, value=1),
                 ev_max_discharge_current=RationalNumber(exponent=0, value=11),
@@ -310,7 +302,7 @@ class SimEVController(EVControllerInterface):
             logger.error(
                 f"Energy transfer service {selected_service.service} not supported"
             )
-            return None
+            raise NotImplementedError
 
     async def get_scheduled_se_params(
         self, selected_energy_service: SelectedEnergyService
@@ -546,33 +538,26 @@ class SimEVController(EVControllerInterface):
         if await self.is_charging_complete():
             logger.debug("Charging is complete.")
             return False
-        elif self.charge_mode == SessionStopMode.CHARGE_CYCLE:
+        elif self.stop_mode == SessionStopMode.CHARGE_CYCLE:
             if self.charging_loop_cycles == self.target_charge_cycle:
                 # To simulate a bit of a charging loop, we'll let it run 'target_charge_cycle' (default: 5) times
                 logger.debug(f"Charging stopped after {self.charging_loop_cycles} cycles.")
                 return False
             else:
                 self.charging_loop_cycles += 1
-                # The line below can just be called once process_message in all states
-                # are converted to async calls
-                # await asyncio.sleep(0.5)
-                return True
-        elif self.charge_mode == SessionStopMode.RELATIVE_TIME:
+        elif self.stop_mode == SessionStopMode.RELATIVE_TIME:
             now = datetime.now()
             if now >= self.end_time:
                 logger.debug(f"App started at {self.start_time}")
                 logger.debug(f"Charging stopped at {now}. Duration {(now - self.start_time).total_seconds()} seconds.")
                 return False
-            else:
-                return True
-        elif self.charge_mode == SessionStopMode.ABSOLUTE_TIME:
+        elif self.stop_mode == SessionStopMode.ABSOLUTE_TIME:
             now = datetime.now()
             if now >= self.end_time:
                 logger.debug(f"Charging stopped at {now}.")
                 return False
         #TODO2 Add SessionStopMode.STATE_OF_CHARGE
-        else:
-            return True
+        return True
 
     async def store_contract_cert_and_priv_key(
         self, contract_cert: bytes, priv_key: bytes
@@ -629,100 +614,48 @@ class SimEVController(EVControllerInterface):
     async def stop_charging(self) -> None:
         self._charging_is_completed = True
 
-    async def get_ac_charge_params_v2(self) -> ChargeParamsV2:
-        """Overrides EVControllerInterface.get_ac_charge_params_v2()."""
-        e_amount = PVEAmount(multiplier=0, value=60, unit=UnitSymbol.WATT_HOURS)
-        ev_max_voltage = PVEVMaxVoltage(
-            multiplier=0, value=400, unit=UnitSymbol.VOLTAGE
-        )
-        ev_max_current = PVEVMaxCurrent(
-            multiplier=-3, value=32000, unit=UnitSymbol.AMPERE
-        )
-        ev_min_current = PVEVMinCurrent(multiplier=0, value=10, unit=UnitSymbol.AMPERE)
-        ac_charge_params = ACEVChargeParameter(
-            departure_time=0,
-            e_amount=e_amount,
-            ev_max_voltage=ev_max_voltage,
-            ev_max_current=ev_max_current,
-            ev_min_current=ev_min_current,
-        )
-        return ChargeParamsV2(
-            await self.get_energy_transfer_mode(), ac_charge_params, None
-        )
-
-    async def get_ac_charge_params_v20(self) -> ACChargeParameterDiscoveryReqParams:
-        """Overrides EVControllerInterface.get_ac_charge_params_v20()."""
-        return ACChargeParameterDiscoveryReqParams(
-            ev_max_charge_power=RationalNumber(exponent=3, value=3),
-            ev_max_charge_power_l2=RationalNumber(exponent=3, value=3),
-            ev_max_charge_power_l3=RationalNumber(exponent=3, value=3),
-            ev_min_charge_power=RationalNumber(exponent=0, value=100),
-            ev_min_charge_power_l2=RationalNumber(exponent=0, value=100),
-            ev_min_charge_power_l3=RationalNumber(exponent=0, value=100),
-        )
-
-    async def get_ac_bpt_charge_params_v20(
-        self,
-    ) -> BPTACChargeParameterDiscoveryReqParams:
-        """Overrides EVControllerInterface.get_bpt_ac_charge_params_v20()."""
-        ac_charge_params_v20 = (await self.get_ac_charge_params_v20()).dict()
-        return BPTACChargeParameterDiscoveryReqParams(
-            **ac_charge_params_v20,
-            ev_max_discharge_power=RationalNumber(exponent=3, value=11),
-            ev_max_discharge_power_l2=RationalNumber(exponent=3, value=11),
-            ev_max_discharge_power_l3=RationalNumber(exponent=3, value=11),
-            ev_min_discharge_power=RationalNumber(exponent=0, value=100),
-            ev_min_discharge_power_l2=RationalNumber(exponent=0, value=100),
-            ev_min_discharge_power_l3=RationalNumber(exponent=0, value=100),
-        )
-
-    async def get_scheduled_ac_charge_loop_params(
-        self,
-    ) -> ScheduledACChargeLoopReqParams:
-        """Overrides EVControllerInterface.get_scheduled_ac_charge_loop_params()."""
-        return ScheduledACChargeLoopReqParams(
-            ev_present_active_power=RationalNumber(exponent=3, value=200),
-            # Add more optional fields if wanted
-        )
-
-    async def get_bpt_scheduled_ac_charge_loop_params(
-        self,
-    ) -> BPTScheduledACChargeLoopReqParams:
-        """Overrides EVControllerInterface.get_bpt_scheduled_ac_charge_loop_params()."""
-        return BPTScheduledACChargeLoopReqParams(
-            ev_present_active_power=RationalNumber(exponent=3, value=200),
-            # Add more optional fields if wanted
-        )
-
-    async def get_dynamic_ac_charge_loop_params(self) -> DynamicACChargeLoopReqParams:
-        """Overrides EVControllerInterface.get_dynamic_ac_charge_loop_params()."""
-        return DynamicACChargeLoopReqParams(
-            ev_target_energy_request=RationalNumber(exponent=3, value=40),
-            ev_max_energy_request=RationalNumber(exponent=3, value=60),
-            ev_min_energy_request=RationalNumber(exponent=3, value=-20),
-            ev_max_charge_power=RationalNumber(exponent=3, value=300),
-            ev_min_charge_power=RationalNumber(exponent=0, value=-100),
-            ev_present_active_power=RationalNumber(exponent=3, value=200),
-            ev_present_reactive_power=RationalNumber(exponent=3, value=20),
-            # Add more optional fields if wanted
-        )
-
-    async def get_bpt_dynamic_ac_charge_loop_params(
-        self,
-    ) -> BPTDynamicACChargeLoopReqParams:
-        """Overrides EVControllerInterface.get_bpt_dynamic_ac_charge_loop_params()."""
-        return BPTDynamicACChargeLoopReqParams(
-            ev_target_energy_request=RationalNumber(exponent=3, value=40),
-            ev_max_energy_request=RationalNumber(exponent=3, value=60),
-            ev_min_energy_request=RationalNumber(exponent=-2, value=20),
-            ev_max_charge_power=RationalNumber(exponent=3, value=300),
-            ev_min_charge_power=RationalNumber(exponent=0, value=-100),
-            ev_present_active_power=RationalNumber(exponent=3, value=200),
-            ev_present_reactive_power=RationalNumber(exponent=3, value=20),
-            ev_max_discharge_power=RationalNumber(exponent=3, value=11),
-            ev_min_discharge_power=RationalNumber(exponent=-3, value=1),
-            # Add more optional fields if wanted
-        )
+    async def get_ac_charge_loop_params_v20(
+        self, control_mode: ControlMode, selected_service: ServiceV20
+    ) -> Union[
+        ScheduledACChargeLoopReqParams,
+        BPTScheduledACChargeLoopReqParams,
+        DynamicACChargeLoopReqParams,
+        BPTDynamicACChargeLoopReqParams,
+    ]:
+        """Overrides EVSControllerInterface.get_ac_charge_loop_params_v20()."""
+        if control_mode == ControlMode.SCHEDULED:
+            scheduled_params = ScheduledACChargeLoopReqParams(
+                ev_present_active_power=RationalNumber(exponent=3, value=200),
+                # Add more optional fields if wanted
+            )
+            if selected_service == ServiceV20.AC_BPT:
+                bpt_scheduled_params = BPTScheduledACChargeLoopReqParams(
+                    **(scheduled_params.dict()),
+                    # Add more optional fields if wanted
+                )
+                return bpt_scheduled_params
+            return scheduled_params
+        else:
+            # Dynamic Mode
+            dynamic_params = DynamicACChargeLoopReqParams(
+                ev_target_energy_request=RationalNumber(exponent=3, value=40),
+                ev_max_energy_request=RationalNumber(exponent=3, value=60),
+                ev_min_energy_request=RationalNumber(exponent=3, value=-20),
+                ev_max_charge_power=RationalNumber(exponent=3, value=300),
+                ev_min_charge_power=RationalNumber(exponent=0, value=-100),
+                ev_present_active_power=RationalNumber(exponent=3, value=200),
+                ev_present_reactive_power=RationalNumber(exponent=3, value=20),
+                # Add more optional fields if wanted
+            )
+            if selected_service == ServiceV20.AC_BPT:
+                bpt_dynamic_params = BPTDynamicACChargeLoopReqParams(
+                    **(dynamic_params.dict()),
+                    ev_max_discharge_power=RationalNumber(exponent=3, value=11),
+                    ev_min_discharge_power=RationalNumber(exponent=-3, value=1),
+                    # Add more optional fields if wanted
+                )
+                return bpt_dynamic_params
+            return dynamic_params
 
     # ============================================================================
     # |                          DC-SPECIFIC FUNCTIONS                           |
@@ -813,7 +746,7 @@ async def load_controller(evcc_config: EVCCConfig) -> SimEVController:
         ev_controller = SimEVController(evcc_config)
         if "stopMode" in data:
             if data["stopMode"] == "chargeCycle":
-                ev_controller.charge_mode = SessionStopMode.CHARGE_CYCLE
+                ev_controller.stop_mode = SessionStopMode.CHARGE_CYCLE
                 if "targetChargeCycle" not in data:
                     logger.debug(f"Parameter 'targetChargeCycle' not found. Default value {ev_controller.targetChargeCycle} will be used.")
                 elif data["targetChargeCycle"] <= 0 or not isinstance(data["targetChargeCycle"], int):
@@ -821,7 +754,7 @@ async def load_controller(evcc_config: EVCCConfig) -> SimEVController:
                 else:
                     ev_controller.target_charge_cycle = data["targetChargeCycle"]
             elif data["stopMode"] == "relativeTime":
-                ev_controller.charge_mode = SessionStopMode.RELATIVE_TIME
+                ev_controller.stop_mode = SessionStopMode.RELATIVE_TIME
                 if "duration" not in data:
                     logger.debug(f"Parameter 'duration' not found. Default value {ev_controller.duration} will be used.")
                 elif data["duration"] <= 0 or not isinstance(data["duration"], int):
@@ -830,7 +763,7 @@ async def load_controller(evcc_config: EVCCConfig) -> SimEVController:
                     ev_controller.duration = data["duration"]
                 ev_controller.end_time = ev_controller.start_time + timedelta(seconds=ev_controller.duration)
             elif data["stopMode"] == "absoluteTime":
-                ev_controller.charge_mode = SessionStopMode.ABSOLUTE_TIME
+                ev_controller.stop_mode = SessionStopMode.ABSOLUTE_TIME
                 if "endTime" not in data:
                     logger.debug(f"Parameter 'endTime' not found. Default value {ev_controller.end_time} will be used.")
                 else:

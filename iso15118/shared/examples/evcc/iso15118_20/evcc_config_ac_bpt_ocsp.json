@@ -1,11 +1,10 @@
 {
 	"supportedProtocols": [
-		"ISO_15118_2"
+		"ISO_15118_20_AC"
 	],
 	"supportedEnergyServices": [
-		"AC"
+		"AC_BPT"
 	],
-	"energyTransferMode": "AC_three_phase_core",
 	"isCertInstallNeeded": false,
 	"useTls": true,
 	"enforceOcsp": true,

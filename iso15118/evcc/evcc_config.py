@@ -121,4 +121,4 @@ async def load_from_file(file_name: str) -> EVCCConfig:
                     logger.info(f"{key:30}: {value}")
         return ev_config
     except Exception as err:
-        logger.info(f"Error on loading evcc config file: {err}")
+        logger.info(f"Error on loading evcc config file:{err}")

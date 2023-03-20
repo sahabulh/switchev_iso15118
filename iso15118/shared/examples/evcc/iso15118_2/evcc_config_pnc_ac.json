@@ -7,6 +7,5 @@
 	],
 	"energyTransferMode": "AC_three_phase_core",
 	"isCertInstallNeeded": false,
-	"useTls": true,
-	"pkiTierMo": 2
+	"useTls": true
 }

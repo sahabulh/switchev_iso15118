@@ -3,12 +3,12 @@ import os
 import secrets
 import ssl
 import requests
-from base64 import urlsafe_b64encode, b64encode
-from datetime import datetime
 from enum import Enum, auto
-from ssl import DER_cert_to_PEM_cert, SSLContext, SSLError, VerifyMode
-from typing import Dict, List, Optional, Tuple, Union
+from datetime import datetime
 from urllib.parse import urljoin
+from base64 import urlsafe_b64encode, b64encode
+from typing import Dict, List, Optional, Tuple, Union
+from ssl import DER_cert_to_PEM_cert, SSLContext, SSLError, VerifyMode
 
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.backends.openssl.backend import Backend
@@ -45,6 +45,7 @@ from cryptography.x509.ocsp import (
     OCSPCertStatus,
     load_der_ocsp_response,
 )
+
 from iso15118.shared.exceptions import (
     CertAttributeError,
     CertChainLengthError,
@@ -557,7 +558,6 @@ def verify_certs(
                         subject=cert.subject.__str__(), attr="PathLength", invalid_value="0"
                     )
                 sub_ca2_cert = cert
-                logger.info(f"sub_ca2_cert")
             elif path_len == 1:
                 if sub_ca1_cert:
                     logger.error(
@@ -707,23 +707,23 @@ def verify_certs(
 
     # Step 3: Check the OCSP (Online Certificate Status Protocol) response to
     #         see whether or not a certificate has been revoked
+    # TODO As OCSP is not supported for the CharIN Testival Europe 2021, we'll
+    #      postpone that step a bit
     # MSHO (OCSP response checking added)
-    
+
     check_ocsp_response(leaf_cert, sub_ca2_cert)
     if sub_ca1_cert:
         check_ocsp_response(sub_ca2_cert, sub_ca1_cert)
         check_ocsp_response(sub_ca1_cert, root_ca_cert)
     else:
         check_ocsp_response(sub_ca2_cert, root_ca_cert)
-    
+
 def check_ocsp_response(cert: Certificate, issuer_cert: Certificate):
     """
     Checks the OCSP  response.
-
     Args:
         cert: Certificate to be cheked (DER encoded)
         issuer_cert: Certificate for the issuer of the above certificate (DER encoded)
-
     Returns:
         OCSPCertStatus (GOOD, REVOKED or UNKNOWN)
     """
@@ -734,13 +734,13 @@ def check_ocsp_response(cert: Certificate, issuer_cert: Certificate):
     req = builder.build()
     ocsp_req_path = b64encode(req.public_bytes(Encoding.DER))
     ocsp_req = urljoin(ocsp_server + '/', ocsp_req_path.decode('ascii'))
-    
+
     # Get response
     try:
         ocsp_res = requests.get(ocsp_req)
     except:
         raise Exception(f"Can't connect to the OCSP server at {ocsp_server}.")
-    
+
     # Check response
     if ocsp_res.ok:
         ocsp_decoded = load_der_ocsp_response(ocsp_res.content)
@@ -754,6 +754,7 @@ def check_ocsp_response(cert: Certificate, issuer_cert: Certificate):
         else:
             raise Exception(f'OCSP response is not successful: {ocsp_decoded.response_status}')
     raise Exception(f'Fetching OCSP status failed with response status: {ocsp_res.status_code}')
+
 
 def check_validity(certs: List[Certificate]):
     """

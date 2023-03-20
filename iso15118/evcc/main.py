@@ -23,13 +23,13 @@ async def main():
             config.ev_config_file_path = ev_config_file_path
     evcc_config = await load_from_file(config.ev_config_file_path)
     ev_controller = await load_controller(evcc_config)
-    
     await EVCCHandler(
         evcc_config=evcc_config,
         iface=config.iface,
         exi_codec=ExificientEXICodec(),
         ev_controller=ev_controller,
     ).start()
+
 
 def run():
     try:
