@@ -151,14 +151,11 @@ openssl x509 -inform PEM -in $CERT_PATH/contractLeafCert.pem -outform DER -out $
 echo "$HOST certificate has been converted and saved in DER format."
 
 # Download moRootCAcert, moSubCA1Cert and moSubCA2Cert
-scp -o 'StrictHostKeyChecking no' root@10.1.2.105:$DEST$CERT_PATH/moRootCACert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.105:$DEST$CERT_PATH/moRootCACert.der $DEST$CERT_PATH
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.105 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/moRootCACert.pem root@10.1.2.108:$DEST$CERT_PATH"
 echo "moRootCA certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.106:$DEST$CERT_PATH/moSubCA1Cert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.106:$DEST$CERT_PATH/moSubCA1Cert.der $DEST$CERT_PATH
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.106 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/moSubCA1Cert.pem root@10.1.2.108:$DEST$CERT_PATH"
 echo "moSubCA1 certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.107:$DEST$CERT_PATH/moSubCA2Cert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.107:$DEST$CERT_PATH/moSubCA2Cert.der $DEST$CERT_PATH
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.107 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/moSubCA2Cert.pem root@10.1.2.108:$DEST$CERT_PATH"
 echo "moSubCA2 certificate is downloaded."
 
 # Concatenate the contract certificate with the MO Sub-2 and Sub-1 certificates to provide a certificate chain
@@ -167,25 +164,12 @@ openssl pkcs12 -export -inkey $KEY_PATH/contractLeaf.key -in $CERT_PATH/contract
 echo "MO certificate chain is created."
 
 # Download V2GRootCAcert, cpoSubCA1Cert and cpoSubCA2Cert
-scp -o 'StrictHostKeyChecking no' root@10.1.2.101:$DEST$CERT_PATH/v2gRootCACert.pem $DEST$CERT_PATH
 scp -o 'StrictHostKeyChecking no' root@10.1.2.101:$DEST$CERT_PATH/v2gRootCACert.der $DEST$CERT_PATH
 echo "V2GRootCA certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.102:$DEST$CERT_PATH/cpoSubCA1Cert.pem $DEST$CERT_PATH
 scp -o 'StrictHostKeyChecking no' root@10.1.2.102:$DEST$CERT_PATH/cpoSubCA1Cert.der $DEST$CERT_PATH
 echo "CPOSubCA1 certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.103:$DEST$CERT_PATH/cpoSubCA2Cert.pem $DEST$CERT_PATH
 scp -o 'StrictHostKeyChecking no' root@10.1.2.103:$DEST$CERT_PATH/cpoSubCA2Cert.der $DEST$CERT_PATH
 echo "CPOSubCA2 certificate is downloaded."
-
-# Send contractLeafCert, moRootCAcert, moSubCA1Cert and moSubCA2Cert to the SECC
-scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/contractLeafCert.der root@10.1.2.104:$DEST$CERT_PATH
-echo "contractLeaf certificate is sent to the SECC."
-scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/moRootCAcert.der root@10.1.2.104:$DEST$CERT_PATH
-echo "moRootCA certificate is sent to the SECC."
-scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/moSubCA1Cert.der root@10.1.2.104:$DEST$CERT_PATH
-echo "moSubCA1 certificate is sent to the SECC."
-scp -o 'StrictHostKeyChecking no' $DEST$CERT_PATH/moSubCA2Cert.der root@10.1.2.104:$DEST$CERT_PATH
-echo "moSubCA2 certificate is sent to the SECC."
 
 # Place all passwords to generated private keys in separate text files.
 echo $password > $KEY_PATH/contractLeafPassword.txt

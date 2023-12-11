@@ -149,15 +149,11 @@ openssl x509 -inform PEM -in $CERT_PATH/seccLeafCert.pem -outform DER -out $CERT
 echo "Certificate has been converted and saved in DER format."
 
 # Download V2GRootCAcert, cpoSubCA1Cert and cpoSubCA2Cert
-# Download V2GRootCAcert, cpoSubCA1Cert and cpoSubCA2Cert
-scp -o 'StrictHostKeyChecking no' root@10.1.2.101:$DEST$CERT_PATH/v2gRootCACert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.101:$DEST$CERT_PATH/v2gRootCACert.der $DEST$CERT_PATH
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.101 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/v2gRootCACert.pem root@10.1.2.104:$DEST$CERT_PATH"
 echo "V2GRootCA certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.102:$DEST$CERT_PATH/cpoSubCA1Cert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.102:$DEST$CERT_PATH/cpoSubCA1Cert.der $DEST$CERT_PATH
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.102 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/cpoSubCA1Cert.pem root@10.1.2.104:$DEST$CERT_PATH"
 echo "CPOSubCA1 certificate is downloaded."
-scp -o 'StrictHostKeyChecking no' root@10.1.2.103:$DEST$CERT_PATH/cpoSubCA2Cert.pem $DEST$CERT_PATH
-scp -o 'StrictHostKeyChecking no' root@10.1.2.103:$DEST$CERT_PATH/cpoSubCA2Cert.der $DEST$CERT_PATH
+ssh -o 'StrictHostKeyChecking no' root@10.1.2.103 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/cpoSubCA2Cert.pem root@10.1.2.104:$DEST$CERT_PATH"
 echo "CPOSubCA2 certificate is downloaded."
 
 # Concatenate the SECC certificate with the CPO Sub-2 and Sub-1 certificates to provide a certificate chain
