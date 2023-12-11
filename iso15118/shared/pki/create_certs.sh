@@ -268,7 +268,7 @@ openssl x509 -req -in $CSR_PATH/oemLeafCert.csr -extfile configs/$ISO_FOLDER/oem
 #      implementing the TLS handshake. This applies only to TLS 1.3 for 15118-20
 cat $CERT_PATH/oemLeafCert.pem $CERT_PATH/oemSubCA2Cert.pem $CERT_PATH/oemSubCA1Cert.pem > $CERT_PATH/oemCertChain.pem
 
-if [ $use_digicert == true ];
+if use_digicert==true;
 then
 	# 9-12) Get pregenerated MO (mobility operator) certificates (MORootCA, MOSubCA2 and ContractLeaf)
 	#    (DigiCert ONE only supports one SubCA) (validity is up to the MO)
