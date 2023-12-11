@@ -13,7 +13,6 @@ element names by using the 'alias' attribute.
 
 from pydantic import Field, root_validator
 
-from iso15118.shared.exceptions import V2GMessageValidationError
 from iso15118.shared.messages import BaseModel
 from iso15118.shared.messages.iso15118_20.common_types import (
     ChargeLoopReq,
@@ -23,7 +22,6 @@ from iso15118.shared.messages.iso15118_20.common_types import (
     DynamicChargeLoopReqParams,
     DynamicChargeLoopResParams,
     RationalNumber,
-    ResponseCode,
     ScheduledChargeLoopReqParams,
     ScheduledChargeLoopResParams,
 )
@@ -337,24 +335,17 @@ class ACChargeParameterDiscoveryReq(ChargeParameterDiscoveryReq):
         """
         # pylint: disable=no-self-argument
         # pylint: disable=no-self-use
-        try:
-            if one_field_must_be_set(
-                [
-                    "ac_params",
-                    "AC_CPDReqEnergyTransferMode",
-                    "bpt_ac_params",
-                    "BPT_AC_CPDReqEnergyTransferMode",
-                ],
-                values,
-                True,
-            ):
-                return values
-        except ValueError as exc:
-            raise V2GMessageValidationError(
-                str(exc),
-                ResponseCode.FAILED_WRONG_CHARGE_PARAMETER,
-                ChargeParameterDiscoveryReq,
-            )
+        if one_field_must_be_set(
+            [
+                "ac_params",
+                "AC_CPDReqEnergyTransferMode",
+                "bpt_ac_params",
+                "BPT_AC_CPDReqEnergyTransferMode",
+            ],
+            values,
+            True,
+        ):
+            return values
 
     def __str__(self):
         # The XSD-conform name

@@ -243,7 +243,7 @@ def create_sdp_response(
     sdp_request: Union[SDPRequest, SDPRequestWireless],
     ip_address: bytes,
     port: int,
-    tls_enabled: bool,
+    enforced_security: bool,
 ) -> Union[SDPResponse, SDPResponseWireless]:
     """
     Creates an SDP response based on the incoming SDP request
@@ -252,7 +252,7 @@ def create_sdp_response(
         sdp_request: The SDP request received from the UDP client
         ip_address: The IP address of the TCP server
         port: The port of the TCP or TLS server
-        tls_enabled: Indicates if a TLS enabled server is available on SECC
+        enforced_security: Whether or not the SECC enforces TLS
 
     Returns:
         An SDPResponse or an SDPResponseWireless, depending on the SDP
@@ -260,10 +260,10 @@ def create_sdp_response(
     """
     sdp_response = None
 
-    if tls_enabled:
+    if enforced_security:
         security = Security.TLS
     else:
-        security = Security.NO_TLS
+        security = sdp_request.security
 
     if isinstance(sdp_request, SDPRequest):
         sdp_response = SDPResponse(ip_address, port, security, Transport.TCP)

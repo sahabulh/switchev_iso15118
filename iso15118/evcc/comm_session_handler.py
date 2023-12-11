@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple, Union
 from pydantic.error_wrappers import ValidationError
 
 from iso15118.evcc.controller.interface import EVControllerInterface
-from iso15118.evcc.evcc_config import EVCCConfig
+from iso15118.evcc.evcc_settings import Config
 from iso15118.evcc.transport.tcp_client import TCPClient
 from iso15118.evcc.transport.udp_client import UDPClient
 from iso15118.shared.comm_session import V2GCommunicationSession
@@ -74,8 +74,7 @@ class EVCCCommunicationSession(V2GCommunicationSession):
         self,
         transport: Tuple[StreamReader, StreamWriter],
         session_handler_queue: asyncio.Queue,
-        evcc_config: EVCCConfig,
-        iface: str,
+        config: Config,
         ev_controller: EVControllerInterface,
     ):
         # Need to import here to avoid a circular import error
@@ -92,8 +91,7 @@ class EVCCCommunicationSession(V2GCommunicationSession):
             self, transport, SupportedAppProtocol, session_handler_queue, self
         )
 
-        self.config = evcc_config
-        self.iface = iface
+        self.config = config
         # The EV controller that implements the interface EVControllerInterface
         self.ev_controller = ev_controller
         # The authorization option (called PaymentOption in ISO 15118-2) the
@@ -105,7 +103,7 @@ class EVCCCommunicationSession(V2GCommunicationSession):
         self.service_details_to_request: List[int] = []
         # Protocols supported by the EVCC as sent to the SECC via
         # the SupportedAppProtocolReq message
-        self.supported_protocols: List[Protocol] = []
+        self.supported_protocols: List[AppProtocol] = []
         # The Ongoing timer (given in seconds) starts running once the EVCC
         # receives a response with the field EVSEProcessing set to 'Ongoing'.
         # Once the timer is up, the EV will terminate the communication session.
@@ -258,18 +256,13 @@ class CommunicationSessionHandler:
     # pylint: disable=too-many-instance-attributes
 
     def __init__(
-        self,
-        config: EVCCConfig,
-        iface: str,
-        codec: IEXICodec,
-        ev_controller: EVControllerInterface,
+        self, config: Config, codec: IEXICodec, ev_controller: EVControllerInterface
     ):
         self.list_of_tasks = []
         self.udp_client = None
         self.tcp_client = None
         self.tls_client = None
         self.config = config
-        self.iface = iface
         self.ev_controller = ev_controller
         self.sdp_retries_number = SDP_MAX_REQUEST_COUNTER
         self._sdp_retry_cycles = self.config.sdp_retry_cycles
@@ -292,7 +285,7 @@ class CommunicationSessionHandler:
         async def __init__. Therefore, we need to create a separate async
         method to be our constructor.
         """
-        self.udp_client = UDPClient(self._rcv_queue, self.iface)
+        self.udp_client = UDPClient(self._rcv_queue, self.config.iface)
         self.list_of_tasks = [
             self.udp_client.start(),
             self.get_from_rcv_queue(self._rcv_queue),
@@ -321,7 +314,7 @@ class CommunicationSessionHandler:
         v2gtp_msg = V2GTPMessage(
             Protocol.UNKNOWN, sdp_request.payload_type, sdp_request.to_payload()
         )
-        logger.info(f"Sending SDPRequest: {sdp_request}")
+        logger.debug(f"Sending SDPRequest: {sdp_request}")
         await self.udp_client.send_and_receive(v2gtp_msg)
 
     async def restart_sdp(self, new_sdp_cycle: bool):
@@ -384,7 +377,7 @@ class CommunicationSessionHandler:
             )
 
         if self.sdp_retries_number > 0:
-            logger.info(f"Remaining SDP requests: {self.sdp_retries_number}")
+            logger.debug(f"Remaining SDP requests: {self.sdp_retries_number}")
             try:
                 await self.send_sdp()
             except InvalidSettingsValueError as exc:
@@ -402,14 +395,14 @@ class CommunicationSessionHandler:
         server_type = "TLS" if is_tls else "TCP"
 
         try:
-            logger.info(
+            logger.debug(
                 f"Starting {server_type} client, trying to connect to "
                 f"{host.compressed} at port {port} ..."
             )
             self.tcp_client = await TCPClient.create(
-                host, port, self._rcv_queue, is_tls, self.iface
+                host, port, self._rcv_queue, is_tls, self.config.iface
             )
-            logger.info("TCP client connected")
+            logger.debug("TCP client connected")
         except Exception as exc:
             logger.exception(
                 f"{exc.__class__.__name__} when trying to connect "
@@ -421,7 +414,6 @@ class CommunicationSessionHandler:
             (self.tcp_client.reader, self.tcp_client.writer),
             self._rcv_queue,
             self.config,
-            self.iface,
             self.ev_controller,
         )
 
@@ -467,7 +459,7 @@ class CommunicationSessionHandler:
                     logger.exception(exc)
                     return  # TODO check if this is correct here
 
-            logger.info(f"SDPResponse received: {sdp_response}")
+            logger.debug(f"SDPResponse received: {sdp_response}")
 
             secc_signals_tls = False
             if sdp_response.security == Security.TLS:

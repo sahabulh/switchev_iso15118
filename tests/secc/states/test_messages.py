@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List
 
 from iso15118.shared.messages.datatypes import (
     PVEAmount,
@@ -11,24 +11,19 @@ from iso15118.shared.messages.iso15118_2.body import (
     AuthorizationReq,
     Body,
     ChargeParameterDiscoveryReq,
-    ChargingStatusReq,
     PaymentDetailsReq,
     PowerDeliveryReq,
-    ServiceDetailReq,
-    ServiceDiscoveryReq,
     SessionStopReq,
     WeldingDetectionReq,
 )
 from iso15118.shared.messages.iso15118_2.datatypes import (
     ACEVChargeParameter,
     ChargeProgress,
-    ChargingProfile,
     ChargingSession,
     DCEVErrorCode,
     DCEVStatus,
     PMaxSchedule,
     PMaxScheduleEntry,
-    ProfileEntryDetails,
     PVPMax,
     RelativeTimeInterval,
     SalesTariff,
@@ -121,15 +116,11 @@ def get_dummy_v2g_message_session_stop_req():
     )
 
 
-def get_dummy_v2g_message_authorization_req(
-    id: Optional[str] = None, gen_challenge: Optional[bytes] = None
-):
+def get_dummy_v2g_message_authorization_req():
     # The AuthorizationReq is empty, unless it is following a PaymentDetailsRes
     # message, in which case it must send back the generated challenge.
-    if gen_challenge:
-        authorization_req = AuthorizationReq(id=id, gen_challenge=gen_challenge)
-    else:
-        authorization_req = AuthorizationReq()
+    authorization_req = AuthorizationReq()
+
     return V2GMessage(
         header=MessageHeader(session_id=MOCK_SESSION_ID),
         body=Body(authorization_req=authorization_req),
@@ -208,281 +199,6 @@ def get_dummy_v2g_message_power_delivery_req_charge_start():
     )
 
 
-def get_v2g_message_power_delivery_req_invalid_charging_profile():
-    charging_profile = ChargingProfile(
-        profile_entries=[
-            ProfileEntryDetails(
-                start=0,
-                max_power=PVPMax(multiplier=0, value=12000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1800,
-                max_power=PVPMax(multiplier=0, value=7000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-        ]
-    )
-
-    power_delivery_req = PowerDeliveryReq(
-        charge_progress=ChargeProgress.START,
-        sa_schedule_tuple_id=1,
-        charging_profile=charging_profile,
-    )
-
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
-def get_v2g_message_power_delivery_req_charging_profile_in_boundary_valid():
-    charging_profile = ChargingProfile(
-        profile_entries=[
-            ProfileEntryDetails(
-                start=0,
-                max_power=PVPMax(multiplier=0, value=11000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1800,
-                max_power=PVPMax(multiplier=0, value=7000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-        ]
-    )
-
-    power_delivery_req = PowerDeliveryReq(
-        charge_progress=ChargeProgress.START,
-        sa_schedule_tuple_id=1,
-        charging_profile=charging_profile,
-    )
-
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
-def get_power_delivery_req_charging_profile_in_boundary_invalid():
-    charging_profile = ChargingProfile(
-        profile_entries=[
-            ProfileEntryDetails(
-                start=0,
-                max_power=PVPMax(multiplier=0, value=10000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1800,
-                max_power=PVPMax(multiplier=0, value=8000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-        ]
-    )
-
-    power_delivery_req = PowerDeliveryReq(
-        charge_progress=ChargeProgress.START,
-        sa_schedule_tuple_id=1,
-        charging_profile=charging_profile,
-    )
-
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
-def get_power_delivery_req_charging_profile_in_limits():
-    charging_profile = ChargingProfile(
-        profile_entries=[
-            ProfileEntryDetails(
-                start=0,
-                max_power=PVPMax(multiplier=0, value=10000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1200,
-                max_power=PVPMax(multiplier=0, value=8000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1800,
-                max_power=PVPMax(multiplier=0, value=6000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-        ]
-    )
-
-    power_delivery_req = PowerDeliveryReq(
-        charge_progress=ChargeProgress.START,
-        sa_schedule_tuple_id=1,
-        charging_profile=charging_profile,
-    )
-
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
-def get_power_delivery_req_charging_profile_not_in_limits():
-    charging_profile = ChargingProfile(
-        profile_entries=[
-            ProfileEntryDetails(
-                start=0,
-                max_power=PVPMax(multiplier=0, value=10000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=2000,
-                max_power=PVPMax(multiplier=0, value=8000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-        ]
-    )
-
-    power_delivery_req = PowerDeliveryReq(
-        charge_progress=ChargeProgress.START,
-        sa_schedule_tuple_id=1,
-        charging_profile=charging_profile,
-    )
-
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
-def get_power_delivery_req_charging_profile_not_in_limits_span_over_sa():
-    charging_profile = ChargingProfile(
-        profile_entries=[
-            ProfileEntryDetails(
-                start=0,
-                max_power=PVPMax(multiplier=0, value=11000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1200,
-                max_power=PVPMax(multiplier=0, value=11000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1900,
-                max_power=PVPMax(multiplier=0, value=7000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-        ]
-    )
-
-    power_delivery_req = PowerDeliveryReq(
-        charge_progress=ChargeProgress.START,
-        sa_schedule_tuple_id=1,
-        charging_profile=charging_profile,
-    )
-
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
-def get_dummy_sa_schedule():
-    sa_schedule_list: list[SAScheduleTuple] = []
-    # PMaxSchedule
-    p_max_schedule_entry_1 = PMaxScheduleEntry(
-        p_max=PVPMax(multiplier=0, value=11000, unit=UnitSymbol.WATT),
-        time_interval=RelativeTimeInterval(start=0, duration=1800),
-    )
-    p_max_schedule_entry_2 = PMaxScheduleEntry(
-        p_max=PVPMax(multiplier=0, value=7000, unit=UnitSymbol.WATT),
-        time_interval=RelativeTimeInterval(start=1800, duration=1800),
-    )
-
-    p_max_schedule = PMaxSchedule(
-        schedule_entries=[p_max_schedule_entry_1, p_max_schedule_entry_2]
-    )
-    # Putting the list of SAScheduleTuple entries together
-    sa_schedule_tuple = SAScheduleTuple(
-        sa_schedule_tuple_id=1,
-        p_max_schedule=p_max_schedule,
-    )
-    sa_schedule_list.append(sa_schedule_tuple)
-    return sa_schedule_list
-
-
-def get_power_delivery_req_charging_profile_out_of_boundary():
-    charging_profile = ChargingProfile(
-        profile_entries=[
-            ProfileEntryDetails(
-                start=0,
-                max_power=PVPMax(multiplier=0, value=11000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1000,
-                max_power=PVPMax(multiplier=0, value=10000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=1800,
-                max_power=PVPMax(multiplier=0, value=7000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=2000,
-                max_power=PVPMax(multiplier=0, value=5000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=2100,
-                max_power=PVPMax(multiplier=0, value=6300, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=2300,
-                max_power=PVPMax(multiplier=0, value=2000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=2400,
-                max_power=PVPMax(multiplier=0, value=4000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=2450,
-                max_power=PVPMax(multiplier=0, value=700, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=2500,
-                max_power=PVPMax(multiplier=0, value=6999, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=3000,
-                max_power=PVPMax(multiplier=0, value=1400, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-            ProfileEntryDetails(
-                start=3100,
-                max_power=PVPMax(multiplier=0, value=8000, unit=UnitSymbol.WATT),
-                max_phases_in_use=3,
-            ),
-        ]
-    )
-
-    power_delivery_req = PowerDeliveryReq(
-        charge_progress=ChargeProgress.START,
-        sa_schedule_tuple_id=1,
-        charging_profile=charging_profile,
-    )
-
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
 def get_dummy_v2g_message_power_delivery_req_charge_stop():
     power_delivery_req = PowerDeliveryReq(
         charge_progress=ChargeProgress.STOP,
@@ -492,28 +208,4 @@ def get_dummy_v2g_message_power_delivery_req_charge_stop():
     return V2GMessage(
         header=MessageHeader(session_id=MOCK_SESSION_ID),
         body=Body(power_delivery_req=power_delivery_req),
-    )
-
-
-def get_dummy_v2g_message_service_discovery_req() -> V2GMessage:
-    service_discovery_req = ServiceDiscoveryReq()
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(service_discovery_req=service_discovery_req),
-    )
-
-
-def get_dummy_charging_status_req() -> V2GMessage:
-    charging_status_req = ChargingStatusReq()
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(charging_status_req=charging_status_req),
-    )
-
-
-def get_v2g_message_service_detail_req(service_id) -> V2GMessage:
-    service_detail_req = ServiceDetailReq(service_id=service_id)
-    return V2GMessage(
-        header=MessageHeader(session_id=MOCK_SESSION_ID),
-        body=Body(service_detail_req=service_detail_req),
     )

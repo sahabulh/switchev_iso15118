@@ -52,6 +52,7 @@ from iso15118.shared.messages.din_spec.timeouts import Timeouts
 from iso15118.shared.messages.enums import (
     AuthEnum,
     AuthorizationStatus,
+    Contactor,
     DCEVErrorCode,
     EVSEProcessing,
     IsolationLevel,
@@ -390,17 +391,15 @@ class ChargeParameterDiscovery(StateSECC):
 
         evse_processing: EVSEProcessing = EVSEProcessing.ONGOING
         next_state: Type["State"] = None
-        sa_schedules = None
         if sa_schedule_list:
             evse_processing = EVSEProcessing.FINISHED
             next_state = CableCheck
-            sa_schedules = SAScheduleList(values=sa_schedule_list)
 
         charge_parameter_discovery_res: ChargeParameterDiscoveryRes = (
             ChargeParameterDiscoveryRes(
                 response_code=ResponseCode.OK,
                 evse_processing=evse_processing,
-                sa_schedule_list=sa_schedules,
+                sa_schedule_list=SAScheduleList(values=sa_schedule_list),
                 dc_charge_parameter=dc_evse_charge_params,
             )
         )
@@ -452,28 +451,24 @@ class CableCheck(StateSECC):
             return
 
         if not self.cable_check_req_was_received:
-            # First CableCheckReq received. Start cable check.
-            await self.comm_session.evse_controller.start_cable_check()
-
             # Requirement in 6.4.3.106 of the IEC 61851-23
             # Any relays in the DC output circuit of the DC station shall
             # be closed during the insulation test
-            if not await self.comm_session.evse_controller.is_contactor_closed():
+            contactor_state = await self.comm_session.evse_controller.close_contactor()
+            if contactor_state != Contactor.CLOSED:
                 self.stop_state_machine(
                     "Contactor didnt close for Cable Check",
                     message,
                     ResponseCode.FAILED,
                 )
                 return
-
+            await self.comm_session.evse_controller.start_cable_check()
             self.cable_check_req_was_received = True
         self.comm_session.evse_controller.ev_data_context.soc = (
             cable_check_req.dc_ev_status.ev_ress_soc
         )
 
-        isolation_level = (
-            await self.comm_session.evse_controller.get_cable_check_status()
-        )  # noqa
+        dc_charger_state = await self.comm_session.evse_controller.get_dc_evse_status()
 
         # [V2G-DC-418] Stay in CableCheck state until EVSEProcessing is complete.
         # Until EVSEProcessing is completed, EV will send identical
@@ -482,24 +477,24 @@ class CableCheck(StateSECC):
         evse_processing: EVSEProcessing = EVSEProcessing.ONGOING
         response_code: ResponseCode = ResponseCode.OK
         next_state: Type["State"] = None
-        if isolation_level in [
+        if dc_charger_state.evse_isolation_status in [
             IsolationLevel.VALID,
             IsolationLevel.WARNING,
         ]:
-            if isolation_level == IsolationLevel.WARNING:
+            if dc_charger_state.evse_isolation_status == IsolationLevel.WARNING:
                 logger.warning(
                     "Isolation resistance measured by EVSE is in Warning-Range"
                 )
             next_state = PreCharge
             evse_processing = EVSEProcessing.FINISHED
-        elif isolation_level in [IsolationLevel.FAULT, IsolationLevel.NO_IMD]:
+        elif dc_charger_state.evse_isolation_status is IsolationLevel.FAULT:
             response_code = ResponseCode.FAILED
             next_state = Terminate
             evse_processing = EVSEProcessing.FINISHED
 
         cable_check_res: CableCheckRes = CableCheckRes(
             response_code=response_code,
-            dc_evse_status=await self.comm_session.evse_controller.get_dc_evse_status(),
+            dc_evse_status=dc_charger_state,
             evse_processing=evse_processing,
         )
 
@@ -521,7 +516,7 @@ class PreCharge(StateSECC):
 
     def __init__(self, comm_session: SECCCommunicationSession):
         super().__init__(comm_session, Timeouts.V2G_SECC_SEQUENCE_TIMEOUT)
-        self.expecting_pre_charge_req = True
+        self.expect_pre_charge_req = True
 
     async def process_message(
         self,
@@ -535,7 +530,7 @@ class PreCharge(StateSECC):
         message_exi: bytes = None,
     ):
         msg = self.check_msg_dinspec(
-            message, [PreChargeReq, PowerDeliveryReq], self.expecting_pre_charge_req
+            message, [PreChargeReq, PowerDeliveryReq], self.expect_pre_charge_req
         )
         if not msg:
             return
@@ -563,9 +558,7 @@ class PreCharge(StateSECC):
         # for the PreCharge phase, the requested current must be < 2 A
         # (maximum inrush current according to CC.5.2 in IEC61851 -23)
         present_current = (
-            await self.comm_session.evse_controller.get_evse_present_current(
-                Protocol.DIN_SPEC_70121
-            )
+            await self.comm_session.evse_controller.get_evse_present_current()
         )
         present_current_in_a = present_current.value * 10**present_current.multiplier
         target_current = precharge_req.ev_target_current
@@ -579,18 +572,15 @@ class PreCharge(StateSECC):
             )
             return
 
-        # Set precharge voltage in every loop.
-        # Because there are EVs that send a wrong Precharge-Voltage
-        # in the first message (example: BMW i3 Rex 2018)
-        await self.comm_session.evse_controller.set_precharge(
-            precharge_req.ev_target_voltage, precharge_req.ev_target_current
-        )
+        if self.expect_pre_charge_req:
+            await self.comm_session.evse_controller.set_precharge(
+                precharge_req.ev_target_voltage, precharge_req.ev_target_current
+            )
+            self.expect_pre_charge_req = False
 
         dc_charger_state = await self.comm_session.evse_controller.get_dc_evse_status()
         evse_present_voltage = (
-            await self.comm_session.evse_controller.get_evse_present_voltage(
-                Protocol.DIN_SPEC_70121
-            )
+            await self.comm_session.evse_controller.get_evse_present_voltage()
         )
 
         precharge_res = PreChargeRes(
@@ -605,8 +595,6 @@ class PreCharge(StateSECC):
             Timeouts.V2G_SECC_SEQUENCE_TIMEOUT,
             Namespace.DIN_MSG_DEF,
         )
-
-        self.expecting_pre_charge_req = False
 
 
 class PowerDelivery(StateSECC):
@@ -696,7 +684,8 @@ class PowerDelivery(StateSECC):
             await self.comm_session.evse_controller.stop_charger()
             # 2nd once the energy transfer is properly interrupted,
             # the contactor(s) may open
-            if not await self.comm_session.evse_controller.is_contactor_opened():
+            contactor_state = await self.comm_session.evse_controller.open_contactor()
+            if contactor_state != Contactor.OPENED:
                 self.stop_state_machine(
                     "Contactor didnt open",
                     message,
@@ -767,14 +756,10 @@ class CurrentDemand(StateSECC):
             response_code=ResponseCode.OK,
             dc_evse_status=await self.comm_session.evse_controller.get_dc_evse_status(),
             evse_present_voltage=(
-                await self.comm_session.evse_controller.get_evse_present_voltage(
-                    Protocol.DIN_SPEC_70121
-                )
+                await self.comm_session.evse_controller.get_evse_present_voltage()
             ),
             evse_present_current=(
-                await self.comm_session.evse_controller.get_evse_present_current(
-                    Protocol.DIN_SPEC_70121
-                )
+                await self.comm_session.evse_controller.get_evse_present_current()
             ),
             evse_current_limit_achieved=current_demand_req.charging_complete,
             evse_voltage_limit_achieved=(
@@ -843,9 +828,7 @@ class WeldingDetection(StateSECC):
             response_code=ResponseCode.OK,
             dc_evse_status=await self.comm_session.evse_controller.get_dc_evse_status(),
             evse_present_voltage=(
-                await self.comm_session.evse_controller.get_evse_present_voltage(
-                    Protocol.DIN_SPEC_70121
-                )
+                await self.comm_session.evse_controller.get_evse_present_voltage()
             ),
         )
 

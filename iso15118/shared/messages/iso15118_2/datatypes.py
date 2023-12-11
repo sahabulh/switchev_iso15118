@@ -273,7 +273,7 @@ class DCEVPowerDeliveryParameter(BaseModel):
     """See section 8.5.4.5 in ISO 15118-2"""
 
     dc_ev_status: DCEVStatus = Field(..., alias="DC_EVStatus")
-    bulk_charging_complete: bool = Field(None, alias="BulkChargingComplete")
+    bulk_charging_complete: bool = Field(None, alis="BulkChargingComplete")
     charging_complete: bool = Field(..., alias="ChargingComplete")
 
 
@@ -552,6 +552,13 @@ class SalesTariff(BaseModel):
                 "'num_e_price_levels' is not provided."
             )
 
+        if e_price_levels != values["num_e_price_levels"]:
+            raise ValueError(
+                "The amount of distinct e_price_levels "
+                f"{e_price_levels} does not match "
+                f"num_e_price_levels "
+                f"({values['num_e_price_levels']})"
+            )
         return value
 
     @validator("sales_tariff_id")

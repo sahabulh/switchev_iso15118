@@ -3,7 +3,7 @@ prompt 					= no
 distinguished_name		= ca_dn
 
 [ca_dn]
-commonName				= PKI-Ext_CRT_MO_SUB1_VALID
+commonName				= MOSubCA1
 organizationName		= Switch
 countryName				= UK
 domainComponent			= MO
@@ -12,5 +12,4 @@ domainComponent			= MO
 basicConstraints		= critical,CA:true,pathlen:1
 keyUsage				= critical,keyCertSign,cRLSign
 subjectKeyIdentifier	= hash
-authorityInfoAccess = OCSP;URI:https://www.example.com/, caIssuers;URI:https://www.example.com/Intermediate-CA.cer
 
