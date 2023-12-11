@@ -129,21 +129,21 @@ openssl req -new -key $KEY_PATH/cpoSubCA1.key -passin pass:$password -config con
 echo "CSR generation is done."
 
 DEST=/venv/lib/python3.10/site-packages/iso15118/shared/pki/
-ssh -o 'StrictHostKeyChecking no' root@10.1.2.101 "cd $DEST;mkdir -p $CERT_PATH;mkdir -p $CSR_PATH;mkdir -p $KEY_PATH"
-scp $CSR_PATH/cpoSubCA1.csr root@10.1.2.101:$DEST$CSR_PATH
+ssh root@10.1.2.102 "cd $DEST;mkdir -p $CERT_PATH;mkdir -p $CSR_PATH;mkdir -p $KEY_PATH"
+scp -o 'StrictHostKeyChecking no' $CSR_PATH/cpoSubCA1.csr root@10.1.2.102:$DEST$CSR_PATH
 echo "CSR is sent to the V2GRootCA."
 
 # Create an X.509 certificate 
-ssh root@10.1.2.101 "cd $DEST;openssl x509 -req -in $CSR_PATH/cpoSubCA1.csr -extfile configs/cpoSubCA1Cert.cnf -extensions ext -CA $CERT_PATH/v2gRootCACert.pem -CAkey $KEY_PATH/v2gRootCA.key -passin pass:$password -set_serial 12346 -out $CERT_PATH/cpoSubCA1Cert.pem -days $VALIDITY_CPO_SUBCA1_CERT"
+ssh root@10.1.2.102 "cd $DEST;openssl x509 -req -in $CSR_PATH/cpoSubCA1.csr -extfile configs/cpoSubCA1Cert.cnf -extensions ext -CA $CERT_PATH/v2gRootCACert.pem -CAkey $KEY_PATH/v2gRootCA.key -passin pass:$password -set_serial 12346 -out $CERT_PATH/cpoSubCA1Cert.pem -days $VALIDITY_CPO_SUBCA1_CERT"
 echo "Certificate generation and signing is finished."
-ssh root@10.1.2.101 "cd $DEST;rm $CSR_PATH/cpoSubCA1.csr"
+ssh root@10.1.2.102 "cd $DEST;rm $CSR_PATH/cpoSubCA1.csr"
 echo "CSR is deleted from the V2GRootCA."
 
-ssh root@10.1.2.101 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/cpoSubCA1Cert.pem root@10.1.2.102:$DEST$CERT_PATH"
+ssh root@10.1.2.102 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/cpoSubCA1Cert.pem root@10.1.2.101:$DEST$CERT_PATH"
 echo "Certificate is sent back to the CPO sub-CA 1."
-ssh root@10.1.2.101 "cd $DEST;rm $CERT_PATH/cpoSubCA1Cert.pem"
+ssh root@10.1.2.102 "cd $DEST;rm $CERT_PATH/cpoSubCA1Cert.pem"
 echo "Certificate is deleted from the V2GRootCA."
 
 # Convert the certificates from PEM format to DER format
 openssl x509 -inform PEM -in $CERT_PATH/cpoSubCA1Cert.pem -outform DER -out $CERT_PATH/cpoSubCA1Cert.der
-echo "Certificate has been converted and saved in DER format."
+echo "Certificate has been converted ans saved in DER format."
