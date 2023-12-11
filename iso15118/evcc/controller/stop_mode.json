@@ -1,7 +1,0 @@
-{
-    "stopMode": "absoluteTime",
-    "targetChargeCycle": 10,
-    "duration": 10,
-    "endTime": "Mar 2 2023 4:56PM",
-    "targetSoC": 80
-}

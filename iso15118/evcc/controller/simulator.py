@@ -46,7 +46,6 @@ from iso15118.shared.messages.enums import (
     Protocol,
     ServiceV20,
     UnitSymbol,
-    SessionStopMode,
 )
 from iso15118.shared.messages.iso15118_2.datatypes import ACEVChargeParameter
 from iso15118.shared.messages.iso15118_2.datatypes import (
@@ -104,10 +103,6 @@ from iso15118.shared.messages.iso15118_20.dc import (
 )
 from iso15118.shared.network import get_nic_mac_address
 
-import json
-from aiofile import async_open
-from datetime import datetime,timedelta
-
 logger = logging.getLogger(__name__)
 
 
@@ -122,11 +117,6 @@ class SimEVController(EVControllerInterface):
         self.precharge_loop_cycles: int = 0
         self._charging_is_completed = False
         self._soc = 10
-        self.charge_mode: SessionStopMode = SessionStopMode.CHARGE_CYCLE
-        self.target_charge_cycle: int = 10
-        self.start_time: datetime.datetime = datetime.now()
-        self.duration: int = 10
-        self.end_time: datetime.datetime = self.start_time + timedelta(seconds=self.duration)
         self.dc_ev_charge_params: DCEVChargeParams = DCEVChargeParams(
             dc_max_current_limit=PVEVMaxCurrentLimit(
                 multiplier=-3, value=32000, unit=UnitSymbol.AMPERE
@@ -543,35 +533,14 @@ class SimEVController(EVControllerInterface):
 
     async def continue_charging(self) -> bool:
         """Overrides EVControllerInterface.continue_charging()."""
-        if await self.is_charging_complete():
-            logger.debug("Charging is complete.")
+        if self.charging_loop_cycles == 10 or await self.is_charging_complete():
+            # To simulate a bit of a charging loop, we'll let it run 10 times
             return False
-        elif self.charge_mode == SessionStopMode.CHARGE_CYCLE:
-            if self.charging_loop_cycles == self.target_charge_cycle:
-                # To simulate a bit of a charging loop, we'll let it run 'target_charge_cycle' (default: 5) times
-                logger.debug(f"Charging stopped after {self.charging_loop_cycles} cycles.")
-                return False
-            else:
-                self.charging_loop_cycles += 1
-                # The line below can just be called once process_message in all states
-                # are converted to async calls
-                # await asyncio.sleep(0.5)
-                return True
-        elif self.charge_mode == SessionStopMode.RELATIVE_TIME:
-            now = datetime.now()
-            if now >= self.end_time:
-                logger.debug(f"App started at {self.start_time}")
-                logger.debug(f"Charging stopped at {now}. Duration {(now - self.start_time).total_seconds()} seconds.")
-                return False
-            else:
-                return True
-        elif self.charge_mode == SessionStopMode.ABSOLUTE_TIME:
-            now = datetime.now()
-            if now >= self.end_time:
-                logger.debug(f"Charging stopped at {now}.")
-                return False
-        #TODO2 Add SessionStopMode.STATE_OF_CHARGE
         else:
+            self.charging_loop_cycles += 1
+            # The line below can just be called once process_message in all states
+            # are converted to async calls
+            # await asyncio.sleep(0.5)
             return True
 
     async def store_contract_cert_and_priv_key(
@@ -605,7 +574,7 @@ class SimEVController(EVControllerInterface):
         return DCEVPowerDeliveryParameter(
             dc_ev_status=await self.get_dc_ev_status(),
             bulk_charging_complete=False,
-            charging_complete=self._charging_is_completed,
+            charging_complete=await self.continue_charging(),
         )
 
     async def is_bulk_charging_complete(self) -> bool:
@@ -800,50 +769,3 @@ class SimEVController(EVControllerInterface):
     async def get_target_voltage(self) -> RationalNumber:
         """Overrides EVControllerInterface.get_target_voltage()."""
         return RationalNumber(exponent=3, value=20)
-        
-async def load_charge_mode(evcc_config: EVCCConfig) -> SimEVController:
-    file_name = "iso15118/evcc/controller/sto_mode.json"
-    try:
-        async with async_open(file_name, "r") as f:
-            json_content = await f.read()
-            data = json.loads(json_content)
-        ev_controller = SimEVController(evcc_config)
-        if "stopMode" in data:
-            if data["stopMode"] == "chargeCycle":
-                ev_controller.charge_mode = SessionStopMode.CHARGE_CYCLE
-                if "targetChargeCycle" not in data:
-                    logger.debug(f"Parameter 'targetChargeCycle' not found. Default value {ev_controller.targetChargeCycle} will be used.")
-                elif data["targetChargeCycle"] <= 0 or not isinstance(data["targetChargeCycle"], int):
-                    logger.debug(f"Parameter 'targetChargeCycle' should be a positive integer. Default value {ev_controller.targetChargeCycle} will be used.")
-                else:
-                    ev_controller.target_charge_cycle = data["targetChargeCycle"]
-            elif data["stopMode"] == "relativeTime":
-                ev_controller.charge_mode = SessionStopMode.RELATIVE_TIME
-                if "duration" not in data:
-                    logger.debug(f"Parameter 'duration' not found. Default value {ev_controller.duration} will be used.")
-                elif data["duration"] <= 0 or not isinstance(data["duration"], int):
-                    logger.debug(f"Parameter 'duration' should be a positive integer. Default value {ev_controller.duration} will be used.")
-                else:
-                    ev_controller.duration = data["duration"]
-                ev_controller.end_time = ev_controller.start_time + timedelta(seconds=ev_controller.duration)
-            elif data["stopMode"] == "absoluteTime":
-                ev_controller.charge_mode = SessionStopMode.ABSOLUTE_TIME
-                if "endTime" not in data:
-                    logger.debug(f"Parameter 'endTime' not found. Default value {ev_controller.end_time} will be used.")
-                else:
-                    try:
-                        ev_controller.end_time = datetime.strptime(data["endTime"], '%b %d %Y %I:%M%p')
-                        if datetime.now() > ev_controller.end_time:
-                            ev_controller.end_time = ev_controller.start_time + timedelta(seconds=ev_controller.duration)
-                            logger.debug(f"Specified end time has already passed. Default value {ev_controller.end_time} will be used.")
-                    except ValueError as err:
-                        logger.debug(f"Parameter 'endTime' has invalid format. Datetime format should be '%b %d %Y %I:%M%p'. Default value {ev_controller.end_time} will be used.")
-            else:
-                logger.debug("Invaid or unimplemented stop mode found. Default parameters will be used.")
-        else:
-            logger.debug("No stop mode parameter is found. Default parameters will be used.")
-        return ev_controller
-    except Exception as err:
-        ev_controller = SimEVController(evcc_config)
-        logger.info(f"Error on loading stop mode file: {err}")
-        return ev_controller
