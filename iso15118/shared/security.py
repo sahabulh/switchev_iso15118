@@ -2,13 +2,11 @@ import logging
 import os
 import secrets
 import ssl
-import requests
-from base64 import urlsafe_b64encode, b64encode
+from base64 import urlsafe_b64encode
 from datetime import datetime
 from enum import Enum, auto
 from ssl import DER_cert_to_PEM_cert, SSLContext, SSLError, VerifyMode
 from typing import Dict, List, Optional, Tuple, Union
-from urllib.parse import urljoin
 
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.backends.openssl.backend import Backend
@@ -23,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     encode_dss_signature,
 )
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.hashes import SHA1, SHA256, Hash, HashAlgorithm
+from cryptography.hazmat.primitives.hashes import SHA256, Hash, HashAlgorithm
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -39,12 +37,8 @@ from cryptography.x509 import (
     NameOID,
     load_der_x509_certificate,
 )
-from cryptography.x509.ocsp import (
-    OCSPRequestBuilder,
-    OCSPResponseStatus,
-    OCSPCertStatus,
-    load_der_ocsp_response,
-)
+from cryptography.x509.ocsp import OCSPRequestBuilder
+
 from iso15118.shared.exceptions import (
     CertAttributeError,
     CertChainLengthError,
@@ -537,49 +531,42 @@ def verify_certs(
     #           the root CA issues the sub-CA 2's certificate directly.
     # TODO We also need to check each certificate's attributes for
     #      compliance with the corresponding certificate profile
-    num_sub_cas = len(sub_ca_der_certs)
     for cert in sub_ca_der_certs:
         path_len = cert.extensions.get_extension_for_oid(
             ExtensionOID.BASIC_CONSTRAINTS
         ).value.path_length
-        if num_sub_cas == 1:
+        if path_len == 0:
+            if sub_ca2_cert:
+                logger.error(
+                    f"Sub-CA cert {sub_ca2_cert.subject.__str__()} "
+                    "already has PathLength attribute set to 0. "
+                    "A certificate chain must not contain two "
+                    "certificates with the same path length"
+                )
+                raise CertAttributeError(
+                    subject=cert.subject.__str__(), attr="PathLength", invalid_value="0"
+                )
             sub_ca2_cert = cert
-        elif num_sub_cas == 2:
-            if path_len == 0:
-                if sub_ca2_cert:
-                    logger.error(
-                        f"Sub-CA cert {sub_ca2_cert.subject.__str__()} "
-                        "already has PathLength attribute set to 0. "
-                        "A certificate chain must not contain two "
-                        "certificates with the same path length"
-                    )
-                    raise CertAttributeError(
-                        subject=cert.subject.__str__(), attr="PathLength", invalid_value="0"
-                    )
-                sub_ca2_cert = cert
-                logger.info(f"sub_ca2_cert")
-            elif path_len == 1:
-                if sub_ca1_cert:
-                    logger.error(
-                        f"Sub-CA cert {sub_ca1_cert.subject.__str__()} "
-                        f"already has PathLength attribute set to 1. "
-                        "A certificate chain must not contain two "
-                        "certificates with the same path length"
-                    )
-                    raise CertAttributeError(
-                        subject=cert.subject.__str__(), attr="PathLength", invalid_value="1"
-                    )
-                sub_ca1_cert = cert
-            else:
-                raise CertChainLengthError(allowed_num_sub_cas=2, num_sub_cas=num_sub_cas)
+        elif path_len == 1:
+            if sub_ca1_cert:
+                logger.error(
+                    f"Sub-CA cert {sub_ca1_cert.subject.__str__()} "
+                    f"already has PathLength attribute set to 1. "
+                    "A certificate chain must not contain two "
+                    "certificates with the same path length"
+                )
+                raise CertAttributeError(
+                    subject=cert.subject.__str__(), attr="PathLength", invalid_value="1"
+                )
+            sub_ca1_cert = cert
         else:
-            raise CertChainLengthError(allowed_num_sub_cas=2, num_sub_cas=num_sub_cas)
-            
-    if num_sub_cas==0 and not private_environment:
-        raise CertChainLengthError(allowed_num_sub_cas=2, num_sub_cas=num_sub_cas)
+            raise CertChainLengthError(allowed_num_sub_cas=2, num_sub_cas=path_len)
 
-    if num_sub_cas!=0 and private_environment:
-        raise CertChainLengthError(allowed_num_sub_cas=0, num_sub_cas=num_sub_cas)
+    if not sub_ca2_cert and not private_environment:
+        raise CertChainLengthError(allowed_num_sub_cas=2, num_sub_cas=0)
+
+    if (sub_ca2_cert or sub_ca1_cert) and private_environment:
+        raise CertChainLengthError(allowed_num_sub_cas=0, num_sub_cas=1)
 
     # Step 1.b: Now that we have established the right order of sub-CA
     #           certificates we can start verifying the signatures from leaf
@@ -707,53 +694,9 @@ def verify_certs(
 
     # Step 3: Check the OCSP (Online Certificate Status Protocol) response to
     #         see whether or not a certificate has been revoked
-    # MSHO (OCSP response checking added)
-    
-    check_ocsp_response(leaf_cert, sub_ca2_cert)
-    if sub_ca1_cert:
-        check_ocsp_response(sub_ca2_cert, sub_ca1_cert)
-        check_ocsp_response(sub_ca1_cert, root_ca_cert)
-    else:
-        check_ocsp_response(sub_ca2_cert, root_ca_cert)
-    
-def check_ocsp_response(cert: Certificate, issuer_cert: Certificate):
-    """
-    Checks the OCSP  response.
+    # TODO As OCSP is not supported for the CharIN Testival Europe 2021, we'll
+    #      postpone that step a bit
 
-    Args:
-        cert: Certificate to be cheked (DER encoded)
-        issuer_cert: Certificate for the issuer of the above certificate (DER encoded)
-
-    Returns:
-        OCSPCertStatus (GOOD, REVOKED or UNKNOWN)
-    """
-    # Build request
-    ocsp_server = get_ocsp_url_for_certificate(cert)
-    builder = OCSPRequestBuilder()
-    builder = builder.add_certificate(cert, issuer_cert, SHA1())
-    req = builder.build()
-    ocsp_req_path = b64encode(req.public_bytes(Encoding.DER))
-    ocsp_req = urljoin(ocsp_server + '/', ocsp_req_path.decode('ascii'))
-    
-    # Get response
-    try:
-        ocsp_res = requests.get(ocsp_req)
-    except:
-        raise Exception(f"Can't connect to the OCSP server at {ocsp_server}.")
-    
-    # Check response
-    if ocsp_res.ok:
-        ocsp_decoded = load_der_ocsp_response(ocsp_res.content)
-        if ocsp_decoded.response_status == OCSPResponseStatus.SUCCESSFUL:
-            if ocsp_decoded.certificate_status == OCSPCertStatus.GOOD:
-                return
-            elif ocsp_decoded.certificate_status == OCSPCertStatus.REVOKED:
-                raise Exception(f"Certificate {cert.subject.__str__()} is revoked. Can't continue PnC session.")
-            elif ocsp_decoded.certificate_status == OCSPCertStatus.UNKNOWN:
-                raise Exception(f"Certificate {cert.subject.__str__()} status is unknown. Can't continue PnC session.")
-        else:
-            raise Exception(f'OCSP response is not successful: {ocsp_decoded.response_status}')
-    raise Exception(f'Fetching OCSP status failed with response status: {ocsp_res.status_code}')
 
 def check_validity(certs: List[Certificate]):
     """

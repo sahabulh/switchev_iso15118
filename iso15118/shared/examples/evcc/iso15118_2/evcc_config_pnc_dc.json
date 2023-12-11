@@ -7,5 +7,5 @@
 	],
 	"energyTransferMode": "DC_extended",
 	"isCertInstallNeeded": false,
-	"useTls": true
+	"useTls": false
 }

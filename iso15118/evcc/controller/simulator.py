@@ -801,11 +801,8 @@ class SimEVController(EVControllerInterface):
         """Overrides EVControllerInterface.get_target_voltage()."""
         return RationalNumber(exponent=3, value=20)
         
-async def load_controller(evcc_config: EVCCConfig) -> SimEVController:
-    """
-    Loads an EVCC simulator to simulate EV charging.
-    """
-    file_name = "iso15118/evcc/controller/stop_mode.json"
+async def load_charge_mode(evcc_config: EVCCConfig) -> SimEVController:
+    file_name = "iso15118/evcc/controller/sto_mode.json"
     try:
         async with async_open(file_name, "r") as f:
             json_content = await f.read()
@@ -848,5 +845,5 @@ async def load_controller(evcc_config: EVCCConfig) -> SimEVController:
         return ev_controller
     except Exception as err:
         ev_controller = SimEVController(evcc_config)
-        logger.info(f"Error on loading stop mode file: {err}. Default parameters will be used.")
+        logger.info(f"Error on loading stop mode file: {err}")
         return ev_controller
