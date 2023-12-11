@@ -106,7 +106,7 @@ fi
 
 echo "Password used is: '$password'"
 
-# Create directories if not yet existing
+# 0) Create directories if not yet existing
 CERT_PATH=$ISO_FOLDER/certs
 KEY_PATH=$ISO_FOLDER/private_keys
 CSR_PATH=$ISO_FOLDER/csrs
@@ -114,36 +114,33 @@ mkdir -p $CERT_PATH
 mkdir -p $CSR_PATH
 mkdir -p $KEY_PATH
 
-# Create an intermediate CPO sub-CA 1 certificate which is directly signed by the V2GRootCA certificate
-
-# Generate private key
+# 2) Create an intermediate CPO sub-CA 1 certificate which is directly signed
+#    by the V2GRootCA certificate
+# ---------------------------------------------------------------------------
+# 2.1) Create a private key (same procedure as for V2GRootCA)
 if [ $version == $ISO_2 ];
 then
     openssl ecparam -genkey -name $EC_CURVE | openssl ec $SYMMETRIC_CIPHER -passout pass:$password -out $KEY_PATH/cpoSubCA1.key
 else
     openssl genpkey -algorithm $EC_CURVE $SYMMETRIC_CIPHER -pass pass:$password -out $KEY_PATH/cpoSubCA1.key
 fi
-
-# Create a CSR
+# 2.2) Create a CSR (same procedure as for V2GRootCA)
 openssl req -new -key $KEY_PATH/cpoSubCA1.key -passin pass:$password -config configs/cpoSubCA1Cert.cnf -out $CSR_PATH/cpoSubCA1.csr
-echo "CSR generation is done."
 
 DEST=/venv/lib/python3.10/site-packages/iso15118/shared/pki/
 ssh root@10.1.2.102 "cd $DEST;mkdir -p $CERT_PATH;mkdir -p $CSR_PATH;mkdir -p $KEY_PATH"
 scp -o 'StrictHostKeyChecking no' $CSR_PATH/cpoSubCA1.csr root@10.1.2.102:$DEST$CSR_PATH
-echo "CSR is sent to the V2GRootCA."
 
-# Create an X.509 certificate 
+# 2.3) Create an X.509 certificate (same procedure as for V2GRootCA, but with
+#      the difference that we need the ‘-CA’ switch to point to the CA
+#      certificate, followed by the ‘-CAkey’ switch that tells OpenSSL where to
+#      find the CA’s private key. We need the private key to create the signature
+#      and the public key certificate to make sure that the CA’s certificate and
+#      private key match.
 ssh root@10.1.2.102 "cd $DEST;openssl x509 -req -in $CSR_PATH/cpoSubCA1.csr -extfile configs/cpoSubCA1Cert.cnf -extensions ext -CA $CERT_PATH/v2gRootCACert.pem -CAkey $KEY_PATH/v2gRootCA.key -passin pass:$password -set_serial 12346 -out $CERT_PATH/cpoSubCA1Cert.pem -days $VALIDITY_CPO_SUBCA1_CERT"
-echo "Certificate generation and signing is finished."
-ssh root@10.1.2.102 "cd $DEST;rm $CSR_PATH/cpoSubCA1.csr"
-echo "CSR is deleted from the V2GRootCA."
 
 ssh root@10.1.2.102 "cd $DEST;scp -o 'StrictHostKeyChecking no' $CERT_PATH/cpoSubCA1Cert.pem root@10.1.2.101:$DEST$CERT_PATH"
-echo "Certificate is sent back to the CPO sub-CA 1."
-ssh root@10.1.2.102 "cd $DEST;rm $CERT_PATH/cpoSubCA1Cert.pem"
-echo "Certificate is deleted from the V2GRootCA."
 
-# Convert the certificates from PEM format to DER format
+# 16) Finally we need to convert the certificates from PEM format to DER format
+#     (PEM is the default format, but ISO 15118 only allows DER format)
 openssl x509 -inform PEM -in $CERT_PATH/cpoSubCA1Cert.pem -outform DER -out $CERT_PATH/cpoSubCA1Cert.der
-echo "Certificate has been converted ans saved in DER format."
