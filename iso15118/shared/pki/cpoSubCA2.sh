@@ -134,7 +134,7 @@ scp $CSR_PATH/cpoSubCA2.csr root@10.1.2.102:$DEST$CSR_PATH
 echo "CSR is sent to the CPO sub-CA 1."
 
 # Create an X.509 certificate 
-ssh root@10.1.2.102 "cd $DEST;openssl x509 -req -in $CSR_PATH/cpoSubCA2.csr -extfile configs/cpoSubCA2Cert.cnf -extensions ext -CA $CERT_PATH/cpoSubCA1Cert.pem -CAkey $KEY_PATH/cpoSubCA1.key -passin pass:$password -set_serial 12347 -out $CERT_PATH/cpoSubCA2Cert.pem -days $VALIDITY_CPO_SUBCA2_CERT"
+ssh root@10.1.2.102 "cd $DEST;openssl x509 -req -in $CSR_PATH/cpoSubCA2.csr -extfile configs/cpoSubCA2Cert.cnf -extensions ext -CA $CERT_PATH/cpoSubCA1Cert.pem -CAkey $KEY_PATH/cpoSubCA1.key -passin pass:$password -set_serial 12346 -out $CERT_PATH/cpoSubCA2Cert.pem -days $VALIDITY_CPO_SUBCA2_CERT"
 echo "Certificate generation and signing is finished."
 ssh root@10.1.2.102 "cd $DEST;rm $CSR_PATH/cpoSubCA2.csr"
 echo "CSR is deleted from the CPO sub-CA 1."

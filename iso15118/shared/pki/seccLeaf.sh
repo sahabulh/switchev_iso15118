@@ -134,7 +134,7 @@ scp $CSR_PATH/seccLeaf.csr root@10.1.2.103:$DEST$CSR_PATH
 echo "CSR is sent to the CPO sub-CA 2."
 
 # Create an X.509 certificate 
-ssh root@10.1.2.103 "cd $DEST;openssl x509 -req -in $CSR_PATH/seccLeaf.csr -extfile configs/seccLeafCert.cnf -extensions ext -CA $CERT_PATH/cpoSubCA2Cert.pem -CAkey $KEY_PATH/cpoSubCA2.key -passin pass:$password -set_serial 12348 -out $CERT_PATH/seccLeafCert.pem -days $VALIDITY_SECC_LEAF_CERT"
+ssh root@10.1.2.103 "cd $DEST;openssl x509 -req -in $CSR_PATH/seccLeaf.csr -extfile configs/seccLeafCert.cnf -extensions ext -CA $CERT_PATH/cpoSubCA2Cert.pem -CAkey $KEY_PATH/cpoSubCA2.key -passin pass:$password -set_serial 12346 -out $CERT_PATH/seccLeafCert.pem -days $VALIDITY_SECC_LEAF_CERT"
 echo "Certificate generation and signing is finished."
 ssh root@10.1.2.103 "cd $DEST;rm $CSR_PATH/seccLeaf.csr"
 echo "CSR is deleted from the CPO sub-CA 2."
